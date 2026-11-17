@@ -75,6 +75,79 @@ impl Calibrator {
     }
 }
 
+/// Online, prequential count model over the byte stream with an `ORDER`-byte context
+/// (0 = unigram, 1 = bigram, 2 = trigram): predicts, then learns. These are the real targets for
+/// Lucy's next-byte accuracy and surprise, measured on exactly the same stream and windows.
+/// Top-1 is a running argmax per context (first byte to reach the max wins ties); code length
+/// uses the KT estimator `(n_ctx,b + 1/2) / (n_ctx + 128)`.
+#[derive(Debug, Clone)]
+pub struct CountModel<const ORDER: usize> {
+    counts: Vec<u32>,
+    totals: Vec<u32>,
+    best: Vec<u8>,
+    ctx: usize,
+    seen: usize,
+}
+
+impl<const ORDER: usize> Default for CountModel<ORDER> {
+    fn default() -> Self {
+        let contexts = 1 << (8 * ORDER);
+        Self {
+            counts: vec![0; contexts * 256],
+            totals: vec![0; contexts],
+            best: vec![0; contexts],
+            ctx: 0,
+            seen: 0,
+        }
+    }
+}
+
+impl<const ORDER: usize> CountModel<ORDER> {
+    /// Score `b` under the model (correct top-1?, bits), then count it.
+    pub fn observe(&mut self, b: u8) -> (bool, f64) {
+        let row = self.ctx * 256;
+        let n = self.totals[self.ctx];
+        let k = self.counts[row + b as usize];
+        let correct = n > 0 && self.best[self.ctx] == b;
+        let bits = -((k as f64 + 0.5) / (n as f64 + 128.0)).log2();
+        self.counts[row + b as usize] = k + 1;
+        self.totals[self.ctx] = n + 1;
+        if k + 1 > self.counts[row + self.best[self.ctx] as usize] {
+            self.best[self.ctx] = b;
+        }
+        if ORDER > 0 {
+            self.ctx = ((self.ctx << 8) | b as usize) & ((1 << (8 * ORDER)) - 1);
+        }
+        self.seen += 1;
+        (correct, bits)
+    }
+}
+
+/// Unigram, bigram and trigram baselines with per-window accumulators.
+#[derive(Debug, Clone, Default)]
+pub struct Baselines {
+    uni: CountModel<0>,
+    bi: CountModel<1>,
+    tri: CountModel<2>,
+    pub correct: [u64; 3],
+    pub bits: [f64; 3],
+}
+
+impl Baselines {
+    pub fn observe(&mut self, b: u8) {
+        let r = [self.uni.observe(b), self.bi.observe(b), self.tri.observe(b)];
+        for (i, (ok, bits)) in r.into_iter().enumerate() {
+            self.correct[i] += u64::from(ok);
+            self.bits[i] += bits;
+        }
+    }
+
+    fn reset_window(&mut self) {
+        self.correct = [0; 3];
+        self.bits = [0.0; 3];
+    }
+}
+
 /// Counters the kernel bumps as it runs. Window fields reset at each report.
 #[derive(Debug, Default, Clone)]
 pub struct Stats {
@@ -87,6 +160,7 @@ pub struct Stats {
     pub correct: u64,
     pub surprise_sum: f64,
     pub calibrator: Calibrator,
+    pub baselines: Baselines,
     pub depth_sum: u64,
     pub depth_windows: u64,
     /// Hidden fires whose freshest ancestry is an older byte (or none): reverberation.
@@ -142,6 +216,7 @@ impl Stats {
     /// measure calibrated surprise from the 256 readout scores.
     pub fn on_byte(&mut self, correct: bool, scores: &[S], truth: usize) {
         let surprise = self.calibrator.observe(scores, truth);
+        self.baselines.observe(truth as u8);
         if self.bytes_total > 0 {
             self.depth_sum += self.byte_depth as u64;
             self.depth_windows += 1;
@@ -160,6 +235,7 @@ impl Stats {
         self.bytes = 0;
         self.correct = 0;
         self.surprise_sum = 0.0;
+        self.baselines.reset_window();
         self.depth_sum = 0;
         self.depth_windows = 0;
         self.reverb_fires = 0;
@@ -241,6 +317,9 @@ pub struct Metrics {
     pub surprise_bits: Option<f64>,
     /// Calibrated softmax temperature at the end of the window.
     pub surprise_temperature: Option<f64>,
+    /// Online count baselines on the same windows: [unigram, bigram, trigram].
+    pub baseline_accuracy: Option<[f64; 3]>,
+    pub baseline_bits: Option<[f64; 3]>,
     /// Mean |e|^2 of hidden fires in the window.
     pub tension: Option<f64>,
     /// Mean, over inter-byte windows, of the furthest hop the current byte's wave reached
@@ -390,6 +469,9 @@ impl Observatory {
             accuracy: ratio(s.correct as f64, s.bytes),
             surprise_bits: ratio(s.surprise_sum, s.bytes),
             surprise_temperature: (s.calibrator.beta > 0.0).then(|| 1.0 / s.calibrator.beta),
+            baseline_accuracy: (s.bytes > 0)
+                .then(|| s.baselines.correct.map(|c| c as f64 / s.bytes as f64)),
+            baseline_bits: (s.bytes > 0).then(|| s.baselines.bits.map(|b| b / s.bytes as f64)),
             tension: ratio(s.e2_sum, s.hidden_fires),
             hop_depth: ratio(s.depth_sum as f64, s.depth_windows),
             reverb_fraction: ratio(s.reverb_fires as f64, s.hidden_fires),
@@ -559,6 +641,25 @@ mod tests {
         assert_eq!(unigram_entropy_bits(b"aabb"), 1.0);
         assert_eq!(unigram_entropy_bits(b"abcd"), 2.0);
         assert_eq!(unigram_top1_accuracy(b"aaab"), 0.75);
+    }
+
+    #[test]
+    fn count_baselines_hand_cases() {
+        // "abab...": unigram can be right half the time at best; bigram learns a->b, b->a.
+        let mut m = Baselines::default();
+        for &b in b"abababababababababab" {
+            m.observe(b);
+        }
+        // Bigram misses the first 3 bytes (contexts 0, a, b are each new once): 17 right.
+        assert_eq!(m.correct[1], 17);
+        // Trigram misses the first 4 (contexts 00, 0a, ab, ba are each new once): 16 right.
+        assert_eq!(m.correct[2], 16);
+        assert!(m.correct[0] <= 10);
+        // KT code length of the very first byte: -log2(0.5 / 128) = 8 bits.
+        let mut u = CountModel::<0>::default();
+        assert_eq!(u.observe(b'x'), (false, 8.0));
+        let (ok, bits) = u.observe(b'x');
+        assert!(ok && (bits - -(1.5f64 / 129.0).log2()).abs() < 1e-12);
     }
 
     #[test]

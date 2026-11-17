@@ -36,6 +36,18 @@ def series(rows, *keys):
     return xs, ys
 
 
+def baseline(rows, key, i):
+    xs, ys = [], []
+    for r in rows:
+        if r.get(key):
+            xs.append(r["bytes_seen"])
+            ys.append(r[key][i])
+    return xs, ys
+
+
+NAMES = ("unigram", "bigram", "trigram")
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -52,6 +64,8 @@ def main():
     a.plot(*series(rows, "surprise_bits"), label="surprise (bits/byte)")
     if "unigram_entropy_bits" in header:
         a.axhline(header["unigram_entropy_bits"], color="k", ls="--", label="unigram entropy")
+    for i, name in enumerate(NAMES):
+        a.plot(*baseline(rows, "baseline_bits", i), ls="-.", lw=1, label=f"{name} (online, KT)")
     a.axhline(8.0, color="grey", ls=":", label="uniform (8 bits)")
     a.set_title("Surprise per byte")
     a.legend()
@@ -60,6 +74,8 @@ def main():
     a.plot(*series(rows, "accuracy"), label="next-byte accuracy")
     if "unigram_top1_accuracy" in header:
         a.axhline(header["unigram_top1_accuracy"], color="k", ls="--", label="always most-frequent byte")
+    for i, name in enumerate(NAMES):
+        a.plot(*baseline(rows, "baseline_accuracy", i), ls="-.", lw=1, label=f"{name} top-1 (online)")
     a.axhline(1 / 256, color="grey", ls=":", label="chance")
     a.set_title("Guess accuracy")
     a.legend()
