@@ -18,6 +18,8 @@ pub struct Engine {
     pub ring: Ring,
     pub stats: Stats,
     pub(crate) sched: Scheduler,
+    /// Decay factor tables derived from `p` (rebuild if `p` changes).
+    decay: rules::Decay,
     /// Logical clock: time of the last processed event.
     pub now: u64,
 }
@@ -27,6 +29,7 @@ impl Engine {
         let mut sched = Scheduler::default();
         sched.push_arrive(0);
         Self {
+            decay: rules::Decay::new(&p),
             p,
             g,
             senses,
@@ -52,7 +55,7 @@ impl Engine {
     /// Scalars of cell `c` as they will be at time `t`, without touching it.
     pub fn peek(&self, c: usize, t: u64) -> Scalars {
         let dt = t.saturating_sub(self.g.cells.last_t[c]);
-        rules::decay_scalars(self.g.cells.scalars(c), dt, &self.p)
+        self.decay.scalars(self.g.cells.scalars(c), dt, &self.p)
     }
 
     /// Process events until the clock would reach `until` or nothing is pending.
@@ -104,9 +107,9 @@ impl Engine {
             return;
         }
         cells.last_t[c] = t;
-        let s = rules::decay_scalars(cells.scalars(c), dt, &self.p);
+        let s = self.decay.scalars(cells.scalars(c), dt, &self.p);
         cells.set_scalars(c, s);
-        let f = rules::decay(dt, self.p.t_heat);
+        let f = self.decay.heat(dt, &self.p);
         if f < S::EPSILON {
             // Trace has decayed below f32 resolution relative to any fresh input: drop it (frees credit memory).
             cells.clear_input(c);

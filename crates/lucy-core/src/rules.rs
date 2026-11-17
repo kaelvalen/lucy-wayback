@@ -150,6 +150,72 @@ pub fn decay_scalars(s: Scalars, dt: u64, p: &Params) -> Scalars {
     }
 }
 
+/// Fast path for [`decay_scalars`]: the same factors, read from per-timescale tables for short
+/// intervals (filled by the same `decay` function, so bit-identical) and computed once each.
+/// Built from `Params` at engine construction.
+#[derive(Clone, Debug)]
+pub struct Decay {
+    heat: Vec<S>,
+    adapt: Vec<S>,
+    rate: Vec<S>,
+    v: Vec<S>,
+    /// `exp(-horizon / t_rate)` once the horizon is capped at `t_rate`.
+    rate_capped: S,
+}
+
+const DECAY_TABLE: u64 = 2048;
+
+impl Decay {
+    pub fn new(p: &Params) -> Self {
+        let table = |tau: S| (0..DECAY_TABLE).map(|dt| decay(dt, tau)).collect();
+        Self {
+            heat: table(p.t_heat),
+            adapt: table(p.t_adapt),
+            rate: table(p.t_rate),
+            v: table(p.t_v),
+            rate_capped: (-p.t_rate / p.t_rate).exp(),
+        }
+    }
+
+    #[inline]
+    fn factor(table: &[S], dt: u64, tau: S) -> S {
+        if dt < DECAY_TABLE {
+            table[dt as usize]
+        } else {
+            decay(dt, tau)
+        }
+    }
+
+    /// The trace (u, heat, credit) decay factor over `dt`.
+    #[inline]
+    pub fn heat(&self, dt: u64, p: &Params) -> S {
+        Self::factor(&self.heat, dt, p.t_heat)
+    }
+
+    /// Exactly [`decay_scalars`], with each exponential evaluated at most once.
+    pub fn scalars(&self, s: Scalars, dt: u64, p: &Params) -> Scalars {
+        if dt == 0 {
+            return s;
+        }
+        let f_rate = Self::factor(&self.rate, dt, p.t_rate);
+        let horizon = (dt as S).min(p.t_rate);
+        // rate_integral's exp(-horizon / t_rate) is f_rate itself while the horizon is uncapped.
+        let e = if (dt as S) <= p.t_rate {
+            f_rate
+        } else {
+            self.rate_capped
+        };
+        let fired = s.rate * p.t_rate * (1.0 - e);
+        Scalars {
+            heat: s.heat * self.heat(dt, p),
+            log_theta: s.log_theta + p.eta_theta * (fired / p.target_rate - horizon),
+            adapt: s.adapt * Self::factor(&self.adapt, dt, p.t_adapt),
+            rate: s.rate * f_rate,
+            v: s.v * Self::factor(&self.v, dt, p.t_v),
+        }
+    }
+}
+
 /// Effective threshold: slow homeostatic level times fast adaptation.
 #[inline]
 pub fn theta_eff(s: &Scalars) -> S {
@@ -299,6 +365,27 @@ mod tests {
         assert!(close(s.log_theta, 0.3 - p.eta_theta * 100.0, 1e-6));
         let far = decay_scalars(sc(0.0), 10_000_000, &p);
         assert!(close(far.log_theta, 0.3 - p.eta_theta * p.t_rate, 1e-5));
+    }
+
+    /// The fast path must be bit-identical to the reference for every interval length.
+    #[test]
+    fn decay_table_is_bit_identical() {
+        let p = Params::default();
+        let d = Decay::new(&p);
+        let s = Scalars {
+            heat: 1.7,
+            log_theta: -0.4,
+            adapt: 2.3,
+            rate: 0.0071,
+            v: 412.0,
+        };
+        let dts = (0..3000u64).chain([1999, 2000, 2001, 2047, 2048, 5000, 99_999, 10_000_000]);
+        for dt in dts {
+            let (a, b) = (decay_scalars(s, dt, &p), d.scalars(s, dt, &p));
+            let bits = |x: Scalars| [x.heat, x.log_theta, x.adapt, x.rate, x.v].map(S::to_bits);
+            assert_eq!(bits(a), bits(b), "dt = {dt}");
+            assert_eq!(d.heat(dt, &p).to_bits(), decay(dt, p.t_heat).to_bits());
+        }
     }
 
     #[test]
