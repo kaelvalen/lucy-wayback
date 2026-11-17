@@ -1,0 +1,5 @@
+# AVX2-era x86-64 (2013+). Bit-identical to baseline x86-64: Rust never contracts a*b+c into FMA
+# and every reduction has a fixed order, so wider vectors change speed, not results (checked by
+# state hash). Lucy's runtime target is any modern CPU; drop this for pre-AVX2 machines.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
