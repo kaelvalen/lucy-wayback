@@ -1,0 +1,388 @@
+//! Every dynamics and learning rule, and every constant, lives here, so the physics can be
+//! swapped without touching storage or scheduling. Rationale for each: docs/DESIGN.md.
+
+use serde::{Deserialize, Serialize};
+
+use crate::num::{D, M, S, V, axpy, dot, matvec, norm2, outer_add, sub};
+
+/// All tunable constants. Timescales are in ticks; step sizes are dimensionless.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Params {
+    /// Decay timescale of u, heat and credit (the coincidence / trace window).
+    pub t_heat: S,
+    /// Rate EMA timescale; also the evidence horizon of threshold homeostasis.
+    pub t_rate: S,
+    /// Vitality timescale (cells and edges).
+    pub t_v: S,
+    /// Decay timescale of fast threshold adaptation (fix 5).
+    pub t_adapt: S,
+    /// Target fires per tick per cell. Sets the compute budget: fires/tick ~ N * target_rate.
+    pub target_rate: S,
+    /// Slow log-threshold homeostasis step per tick (fixes 1, 2).
+    pub eta_theta: S,
+    /// Fast adaptation added per fire: theta_eff = theta * (1 + adapt) (fix 5).
+    pub adapt_step: S,
+    /// Normalized-LMS step for the predictor Q, in (0, 2) (fix 3).
+    pub eta_q: S,
+    /// NLMS regularizer so h_prev = 0 is a no-op instead of a division by zero.
+    pub nlms_eps: S,
+    /// Credit step for in-edge gains (followed by synaptic scaling, fix 4).
+    pub eta_g: S,
+    /// Per-fire EMA weight of tau (tension).
+    pub alpha_tau: S,
+    /// Vitality added per use (cell fire / edge transmit).
+    pub alpha_v: S,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            t_heat: 4.0,
+            t_rate: 2000.0,
+            t_v: 100_000.0,
+            t_adapt: 50.0,
+            target_rate: 0.005,
+            eta_theta: 1e-3,
+            adapt_step: 1.0,
+            eta_q: 0.1,
+            nlms_eps: 1e-3,
+            eta_g: 0.05,
+            alpha_tau: 0.05,
+            alpha_v: 1.0,
+        }
+    }
+}
+
+impl Params {
+    pub fn validate(&self) -> Result<(), String> {
+        let positive = [
+            ("t_heat", self.t_heat),
+            ("t_rate", self.t_rate),
+            ("t_v", self.t_v),
+            ("t_adapt", self.t_adapt),
+            ("target_rate", self.target_rate),
+            ("nlms_eps", self.nlms_eps),
+        ];
+        let non_negative = [
+            ("eta_theta", self.eta_theta),
+            ("adapt_step", self.adapt_step),
+            ("eta_g", self.eta_g),
+            ("alpha_v", self.alpha_v),
+        ];
+        for (name, x) in positive {
+            if !(x.is_finite() && x > 0.0) {
+                return Err(format!("{name} must be finite and > 0, got {x}"));
+            }
+        }
+        for (name, x) in non_negative {
+            if !(x.is_finite() && x >= 0.0) {
+                return Err(format!("{name} must be finite and >= 0, got {x}"));
+            }
+        }
+        if !(self.eta_q >= 0.0 && self.eta_q < 2.0) {
+            return Err(format!(
+                "eta_q must be in [0, 2) for NLMS stability, got {}",
+                self.eta_q
+            ));
+        }
+        if !(self.alpha_tau > 0.0 && self.alpha_tau <= 1.0) {
+            return Err(format!(
+                "alpha_tau must be in (0, 1], got {}",
+                self.alpha_tau
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The lazily-decaying scalar state of one cell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scalars {
+    pub heat: S,
+    pub log_theta: S,
+    pub adapt: S,
+    pub rate: S,
+    pub v: S,
+}
+
+/// Exponential decay factor over `dt` ticks with timescale `tau`.
+#[inline]
+pub fn decay(dt: u64, tau: S) -> S {
+    if dt == 0 {
+        1.0
+    } else {
+        (-(dt as S) / tau).exp()
+    }
+}
+
+/// Integral of an exponentially decaying rate r0 over `dt` ticks.
+#[inline]
+pub fn rate_integral(r0: S, dt: S, t_rate: S) -> S {
+    r0 * t_rate * (1.0 - (-dt / t_rate).exp())
+}
+
+/// Lazy decay of a cell's scalars from its last touch to now. Pure, so the observatory can
+/// read state at any time without perturbing it.
+///
+/// Threshold homeostasis (fixes 1+2) is integrated in closed form over the interval in the log
+/// domain, so silent cells lower their threshold when next touched. The evidence horizon is
+/// capped at `t_rate`: the rate EMA has forgotten anything older, so silence beyond it would
+/// otherwise be counted without bound and drive theta to zero.
+pub fn decay_scalars(s: Scalars, dt: u64, p: &Params) -> Scalars {
+    if dt == 0 {
+        return s;
+    }
+    let horizon = (dt as S).min(p.t_rate);
+    let fired = rate_integral(s.rate, horizon, p.t_rate);
+    Scalars {
+        heat: s.heat * decay(dt, p.t_heat),
+        log_theta: s.log_theta + p.eta_theta * (fired / p.target_rate - horizon),
+        adapt: s.adapt * decay(dt, p.t_adapt),
+        rate: s.rate * decay(dt, p.t_rate),
+        v: s.v * decay(dt, p.t_v),
+    }
+}
+
+/// Effective threshold: slow homeostatic level times fast adaptation.
+#[inline]
+pub fn theta_eff(s: &Scalars) -> S {
+    s.log_theta.exp() * (1.0 + s.adapt)
+}
+
+/// Scalar bookkeeping of one fire (state must already be decayed to now).
+pub fn on_fire(s: &mut Scalars, p: &Params) {
+    s.heat = 0.0;
+    s.rate += 1.0 / p.t_rate;
+    s.adapt += p.adapt_step;
+    s.v += p.alpha_v;
+}
+
+/// Edge vitality after a transmit `dt` ticks after its last use.
+#[inline]
+pub fn edge_vitality(v: S, dt: u64, p: &Params) -> S {
+    v * decay(dt, p.t_v) + p.alpha_v
+}
+
+/// TENSION of a hidden cell: `e = u - Q h_prev`.
+#[inline]
+pub fn prediction_error(u: &V, q: &M, h_prev: &V) -> V {
+    sub(u, &matvec(q, h_prev))
+}
+
+/// Normalized LMS: `Q += eta_q / (eps + |h_prev|^2) * e h_prev^T` (fix 3, stable for eta_q < 2).
+pub fn nlms(q: &mut M, e: &V, h_prev: &V, p: &Params) {
+    let s = p.eta_q / (p.nlms_eps + norm2(h_prev));
+    outer_add(q, e, h_prev, s);
+}
+
+/// Local credit for one in-edge: `delta gain = eta_g * dot(toward, m) / D`, where `toward` is
+/// the direction the cell's input should move. Hidden cells pass `-e` (inputs move toward the
+/// prediction); input cells pass `code - u` (inputs move toward reality).
+#[inline]
+pub fn credit_step(toward: &V, m: &V, eta_g: S) -> S {
+    eta_g * dot(toward, m) / D as S
+}
+
+/// Synaptic scaling (fix 4): multiplier that restores the in-gain L2 norm to its birth value.
+#[inline]
+pub fn scale_factor(norm2: S, target: S) -> S {
+    if norm2 > 0.0 {
+        target / norm2.sqrt()
+    } else {
+        1.0
+    }
+}
+
+/// RMS clip (fix 6): `u * sqrt(D) / max(|u|, sqrt(D))`, so tanh never saturates on input scale.
+pub fn clip_rms(u: &V) -> V {
+    let cap = (D as S).sqrt();
+    let n = norm2(u).sqrt();
+    if n <= cap {
+        return *u;
+    }
+    let mut out = [0.0; D];
+    axpy(&mut out, cap / n, u);
+    out
+}
+
+/// New state: `h = tanh(W h + clip(u))`.
+#[inline]
+pub fn activate(w: &M, h: &V, u: &V) -> V {
+    let mut x = matvec(w, h);
+    axpy(&mut x, 1.0, &clip_rms(u));
+    x.map(S::tanh)
+}
+
+#[inline]
+pub fn ema(old: S, x: S, alpha: S) -> S {
+    old + alpha * (x - old)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::num::{ZERO, ZERO_M, basis};
+
+    fn close(a: S, b: S, tol: S) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    fn sc(rate: S) -> Scalars {
+        Scalars {
+            heat: 2.0,
+            log_theta: 0.3,
+            adapt: 1.5,
+            rate,
+            v: 4.0,
+        }
+    }
+
+    #[test]
+    fn lazy_decay_composes() {
+        // Decaying in two steps must equal decaying once over the sum (within the horizon).
+        let p = Params::default();
+        let s = sc(0.02);
+        let two = decay_scalars(decay_scalars(s, 300, &p), 700, &p);
+        let one = decay_scalars(s, 1000, &p);
+        assert!(close(two.heat, one.heat, 1e-6));
+        assert!(close(two.rate, one.rate, 1e-7));
+        assert!(close(two.v, one.v, 1e-5));
+        assert!(close(two.adapt, one.adapt, 1e-6));
+        assert!(close(two.log_theta, one.log_theta, 1e-4));
+    }
+
+    #[test]
+    fn lazy_decay_values() {
+        let p = Params::default();
+        let s = decay_scalars(sc(0.0), 4, &p);
+        assert!(close(s.heat, 2.0 * (-1.0f32).exp(), 1e-6));
+        assert!(close(s.adapt, 1.5 * (-4.0f32 / 50.0).exp(), 1e-6));
+        assert_eq!(decay_scalars(sc(0.3), 0, &p), sc(0.3));
+    }
+
+    #[test]
+    fn silent_cell_lowers_theta_with_capped_horizon() {
+        let p = Params::default();
+        let s = decay_scalars(sc(0.0), 100, &p);
+        assert!(close(s.log_theta, 0.3 - p.eta_theta * 100.0, 1e-6));
+        let far = decay_scalars(sc(0.0), 10_000_000, &p);
+        assert!(close(far.log_theta, 0.3 - p.eta_theta * p.t_rate, 1e-5));
+    }
+
+    #[test]
+    fn rate_integral_matches_numeric() {
+        let (r0, dt, tr) = (0.04, 500.0, 2000.0);
+        let steps = 100_000;
+        let h = dt / steps as S;
+        let numeric: f64 = (0..steps)
+            .map(|i| (r0 * (-((i as S + 0.5) * h) / tr).exp() * h) as f64)
+            .sum();
+        assert!((rate_integral(r0, dt, tr) as f64 - numeric).abs() < 1e-3);
+    }
+
+    #[test]
+    fn theta_rises_when_firing_above_target() {
+        let p = Params::default();
+        let s = decay_scalars(sc(10.0 * p.target_rate), 10, &p);
+        assert!(s.log_theta > 0.3);
+    }
+
+    #[test]
+    fn prediction_error_hand_case() {
+        let mut q = ZERO_M;
+        q[0][0] = 0.5;
+        q[1][1] = 0.5;
+        let mut h_prev = ZERO;
+        h_prev[0] = 1.0;
+        h_prev[1] = 2.0;
+        let mut u = ZERO;
+        u[0] = 1.0;
+        u[1] = 1.0;
+        let e = prediction_error(&u, &q, &h_prev);
+        assert_eq!((e[0], e[1], e[2]), (0.5, 0.0, 0.0));
+    }
+
+    #[test]
+    fn nlms_hand_case() {
+        let p = Params {
+            eta_q: 0.1,
+            nlms_eps: 1e-3,
+            ..Params::default()
+        };
+        let mut q = ZERO_M;
+        let mut h_prev = ZERO;
+        h_prev[0] = 1.0;
+        h_prev[1] = 1.0;
+        nlms(&mut q, &basis(0), &h_prev, &p);
+        let want = 0.1 / 2.001;
+        assert!(close(q[0][0], want, 1e-7) && close(q[0][1], want, 1e-7));
+        assert_eq!(q[1][0], 0.0);
+        // NLMS fully corrects in one step when eta_q = 1: the new prediction matches u.
+        let p1 = Params {
+            eta_q: 1.0,
+            nlms_eps: 1e-9,
+            ..Params::default()
+        };
+        let mut q = ZERO_M;
+        let e = prediction_error(&basis(3), &q, &h_prev);
+        nlms(&mut q, &e, &h_prev, &p1);
+        assert!(norm2(&prediction_error(&basis(3), &q, &h_prev)) < 1e-6);
+    }
+
+    #[test]
+    fn credit_and_scaling_hand_case() {
+        let mut m = ZERO;
+        m[0] = 2.0;
+        assert!(close(credit_step(&basis(0), &m, 0.05), 0.003125, 1e-9));
+        assert_eq!(scale_factor(25.0, 10.0), 2.0); // gains [3,4] -> [6,8]
+        assert_eq!(scale_factor(0.0, 10.0), 1.0);
+    }
+
+    #[test]
+    fn clip_rms_caps_norm() {
+        let big = [2.0; D]; // norm = 2 sqrt(D)
+        let c = clip_rms(&big);
+        assert!(close(norm2(&c).sqrt(), (D as S).sqrt(), 1e-4));
+        let small = [0.5; D];
+        assert_eq!(clip_rms(&small), small);
+    }
+
+    #[test]
+    fn activate_hand_case() {
+        let mut u = ZERO;
+        u[0] = 0.5;
+        let h = activate(&ZERO_M, &ZERO, &u);
+        assert!(close(h[0], 0.5f32.tanh(), 1e-7));
+        assert_eq!(h[1], 0.0);
+    }
+
+    #[test]
+    fn validate_rejects_bad_params() {
+        assert!(Params::default().validate().is_ok());
+        assert!(
+            Params {
+                eta_q: 2.5,
+                ..Params::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Params {
+                t_heat: 0.0,
+                ..Params::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Params {
+                nlms_eps: S::NAN,
+                ..Params::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+}

@@ -1,0 +1,5 @@
+# Exact pin: bit-identical determinism (libm exp/tanh, codegen) depends on the same compiler.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

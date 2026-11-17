@@ -1,0 +1,14 @@
+[package]
+name = "lucy-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "lucy"
+path = "src/main.rs"
+
+[dependencies]
+lucy-core.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
