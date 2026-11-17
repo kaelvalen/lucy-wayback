@@ -7,7 +7,7 @@ use crate::buffer::{FireEvent, Ring};
 use crate::num::{S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
 use crate::observe::{Observatory, Stats};
 use crate::rules::{self, Params, Scalars};
-use crate::scheduler::{Payload, Phase, Scheduler};
+use crate::scheduler::{Payload, Scheduler};
 use crate::senses::{self, Senses};
 use crate::store::{Credit, EdgeId, Graph, Id, Kind, Wave};
 
@@ -25,7 +25,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(p: Params, g: Graph, senses: Senses, ring_cap: usize) -> Self {
         let mut sched = Scheduler::default();
-        sched.push(0, Phase::Sense, 0, Payload::Arrive);
+        sched.push_arrive(0);
         Self {
             p,
             g,
@@ -138,8 +138,7 @@ impl Engine {
                 if !cells.fire_pending[c] && cells.heat[c] >= rules::theta_eff(&cells.scalars(c)) {
                     cells.fire_pending[c] = true;
                     let generation = cells.slots.id(c as u32).generation;
-                    self.sched
-                        .push(t, Phase::Fire, c as u32, Payload::Fire { generation });
+                    self.sched.push_fire(t, c as u32, generation);
                 }
             }
         }
@@ -201,18 +200,21 @@ impl Engine {
         g.cells.clear_input(c);
         let h = g.cells.h[c];
         let edges = &mut g.edges;
+        // h is stored once; each message carries its edge's gain at send time (m = h * gain).
+        let state = sched.push_state(t + 1, &h);
         for &e in &g.cells.outs[c] {
             let i = e as usize;
             edges.vitality[i] = rules::edge_vitality(edges.vitality[i], t - edges.last_t[i], p);
             edges.last_t[i] = t;
-            let mut m = h;
-            scale(&mut m, edges.gain[i]);
-            let payload = Payload::Deliver {
-                edge: edges.slots.id(e),
-                m,
-                wave: wave.next_hop(),
-            };
-            sched.push(t + 1, Phase::Deliver, edges.dst[i], payload);
+            let id = edges.slots.id(e);
+            sched.push_deliver(
+                t + 1,
+                edges.dst[i],
+                id,
+                edges.gain[i],
+                state,
+                wave.next_hop(),
+            );
         }
         ring.push(FireEvent {
             cell: g.cells.slots.id(c as u32),
@@ -286,12 +288,7 @@ impl Engine {
                 depth: 0,
             },
         );
-        self.sched.push(
-            t + self.senses.ticks_per_byte,
-            Phase::Sense,
-            0,
-            Payload::Arrive,
-        );
+        self.sched.push_arrive(t + self.senses.ticks_per_byte);
     }
 }
 
@@ -300,6 +297,7 @@ mod tests {
     use super::*;
     use crate::num::{D, ZERO_M, basis};
     use crate::observe::{Observatory, state_hash};
+    use crate::scheduler::Phase;
     use crate::seed::{self, SeedConfig};
     use crate::senses::N_BYTES;
     use crate::store::CellInit;
