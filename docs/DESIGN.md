@@ -189,20 +189,59 @@ near-constant. A unit test also asserts that dormant cells are never touched (`l
 - Per-edge credit vectors (deeper credit assignment).
 - All state behind SoA columns and the `S` alias (cold-tier mmap, quantization).
 
-## Open findings (Phase 1 run, need a decision)
+## Results history
 
-1. **The input readout cannot learn as specified.** Guess/surprise read `heat = Σ|gain|·|h|`,
-   but the rule `gain += eta_g·dot(code − u, m)/D` trains the vector `u` toward `code`. That moves
-   |gain| with the sign of `dot(code, h)`, which is random. Reading the trained quantity instead
-   (`dot(u_c, code_c)`) does not help either: scalar gains on hidden states that are random relative
-   to the codes cannot steer `u_c` toward `code_c`. Measured (first 50 k bytes): heat, alignment,
-   with/without input scaling are all at chance (accuracy ≈ 0.2 %). Giving each input cell a linear
-   readout using its own Q (prediction `Q_c u_c`, NLMS toward `code_b` or 0, the hidden-cell rule
-   reused) lifts accuracy to ≈ 10 %.
-2. **σ-normalised softmax surprise is miscalibrated.** Most of the 256 cells are cold, so σ is
-   small relative to the hot ones, the softmax is overconfident, and misses cost far more than
-   8 bits. Even the 10 %-accuracy readout scores ≈ 13.5 bits. Proposed: calibrate the temperature
-   online in the observatory (one scalar, fitted by log-loss, never fed back into the dynamics),
-   or mix with a uniform floor.
-3. **Prediction lag** (fixed after `phase1-baseline`). The baseline computed `e = u − Q·h_prev`
-   before `h_prev = h`, so Q predicted from the state two fires back. Now `e = u − Q·h`.
+All learning measurements use CHILDES child-directed speech (`corpus/childes-1mb.txt`,
+1 000 000 bytes, speaker tags kept). Baselines for that file: unigram entropy **4.683 bits**,
+unigram top-1 accuracy **20.96 %** (always guess space), in-sample bigram oracle top-1 41.2 %
+(conditional entropy 2.73 bits, a ceiling reference only).
+
+### Engineering corpus (history only)
+
+`phase1-baseline` on 1 MiB of Newton's *Opticks* + Neovim docs (unigram 4.747 bits, top-1
+17.2 %): 2.5 M events/s, rate at target, no death or avalanche, but accuracy at chance (0.1 %)
+and σ-softmax surprise 15.4 bits. Readout experiments on the first 50 k bytes: heat, alignment
+`dot(u, code)`, with or without input-cell scaling all at chance; per-input-cell Q readout ≈ 10 %
+accuracy. This led to the commits below.
+
+### CHILDES, seed 7, 1 000 000 bytes, one commit at a time
+
+Mean of the last 10 report windows (100 k ticks each).
+
+| Commit | Change | Accuracy | Surprise (bits) | Hidden tension |
+|---|---|---|---|---|
+| `620087c` (`phase1-baseline`) | rules as approved | 0.11 % | 16.37 (σ-softmax) | 3.72 |
+| `03f61de` | input-cell Q readout + prior | **22.23 %** | 11.99 (σ-softmax) | 3.72 |
+| `295ff41` | calibrated surprise (observatory only) | 22.23 % | **6.69** (calibrated) | 3.72 |
+| `3c3db0a` | prediction-lag fix | 22.20 % | 6.66 | **2.06** |
+
+- The readout beats unigram top-1 (20.96 %), but only by ≈ 1.3 points (best window 24.3 %).
+- `295ff41` has the same final state hash as `03f61de` (`6a60a0d83cfd6644`): calibration is
+  observatory-only, as intended.
+- The lag fix cuts hidden tension by 45 % (Q predicts much better) but does not change accuracy:
+  hidden prediction quality does not reach the readout (see finding 2).
+- Throughput with four runs in parallel: 1.5–1.8 M events/s per run.
+
+## Open findings
+
+1. **W is never updated: hidden cells are a fixed random reservoir.** This violates the "nothing
+   frozen" principle and is the main target of Phase 2 (W learns from the one-hop feedback during
+   reverse replay). No change in Phase 1.
+2. **The readout barely beats unigram top-1 because input-cell hotness carries no information.**
+   Measured on the first 200 k CHILDES bytes (`hot_inputs_per_byte`, `truth_hot_fraction`):
+   ≈ 101 of 256 input cells are hot before each byte, and the true byte's cell is hot 37.5 % of
+   the time, against 39.5 % for a random cell. Which input cells hear anything is set by the fixed random
+   hidden→input wiring and the reservoir's own dynamics, not by what comes next. So the
+   per-cell Q readout only exploits what little context its predecessors' vectors carry, and the
+   prior does most of the work. Learning can reweight in-gains but cannot change *which* cells
+   are reached. That requires W learning or new edges (Phase 2).
+3. **Calibrated surprise (6.7 bits) is still worse than unigram entropy (4.68 bits).** The
+   readout scores are linear-probability estimates (LMS toward 1/0), and `softmax(score / tau)`
+   exponentiates them: with tau ≈ 0.05 the most and least likely bytes differ by at most
+   e^(0.21/0.05) ≈ 70×, while true unigram ratios run to thousands. One scalar temperature cannot
+   fix the shape. A candidate (still observatory-only, still one scalar) is to calibrate on
+   `log(max(score, floor))`. Not changed yet; accuracy is the primary metric.
+4. **Watch items (not fixed).** Theta (reservoir mean of `theta_eff`) falls from 0.42 to 0.041
+   by ≈ 300 k bytes and sits at ≈ 0.06 at the end, including after the three fixes. The rate stays
+   at target, so fast adaptation now does most of the gating. Reverb fraction climbs to ≈ 35 % and
+   plateaus, below the 60 % alarm.

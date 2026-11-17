@@ -228,7 +228,9 @@ impl Engine {
         let Some(byte) = src.next() else { return };
         let b = byte as usize;
         let mut touched = self.senses.take_hot();
-        if !touched.contains(&(b as u32)) {
+        let truth_hot = touched.contains(&(b as u32));
+        self.stats.on_coverage(touched.len(), truth_hot);
+        if !truth_hot {
             touched.push(b as u32);
         }
         for &c in &touched {

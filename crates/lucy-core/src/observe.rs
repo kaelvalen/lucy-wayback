@@ -91,6 +91,9 @@ pub struct Stats {
     pub depth_windows: u64,
     /// Hidden fires whose freshest ancestry is an older byte (or none): reverberation.
     pub reverb_fires: u64,
+    /// Readout coverage: hot input cells summed over bytes, and bytes whose true cell was hot.
+    pub hot_inputs: u64,
+    pub truth_hot: u64,
     pub max_tick_fires: u64,
     /// Distinct cells fired this window (stamp dedup).
     pub fired: Vec<u32>,
@@ -117,6 +120,12 @@ impl Stats {
             self.stamp[c] = self.window;
             self.fired.push(c as u32);
         }
+    }
+
+    /// Before a byte is scored: how many input cells heard anything, and whether the true one did.
+    pub fn on_coverage(&mut self, hot: usize, truth_hot: bool) {
+        self.hot_inputs += hot as u64;
+        self.truth_hot += u64::from(truth_hot);
     }
 
     pub fn on_hidden_fire(&mut self, e2: S, wave: Wave) {
@@ -154,6 +163,8 @@ impl Stats {
         self.depth_sum = 0;
         self.depth_windows = 0;
         self.reverb_fires = 0;
+        self.hot_inputs = 0;
+        self.truth_hot = 0;
         self.max_tick_fires = 0;
         self.cur_tick_fires = 0;
         self.fired.clear();
@@ -237,6 +248,10 @@ pub struct Metrics {
     pub hop_depth: Option<f64>,
     /// Fraction of hidden fires driven by an older byte (or none): self-sustained activity.
     pub reverb_fraction: Option<f64>,
+    /// Mean number of input cells that received any message in the window before a byte.
+    pub hot_inputs_per_byte: Option<f64>,
+    /// Fraction of bytes whose own input cell received any message before it arrived.
+    pub truth_hot_fraction: Option<f64>,
     pub events_total: u64,
     pub pending_events: usize,
     /// Hidden cells that fired in the window (exact).
@@ -378,6 +393,8 @@ impl Observatory {
             tension: ratio(s.e2_sum, s.hidden_fires),
             hop_depth: ratio(s.depth_sum as f64, s.depth_windows),
             reverb_fraction: ratio(s.reverb_fires as f64, s.hidden_fires),
+            hot_inputs_per_byte: ratio(s.hot_inputs as f64, s.bytes),
+            truth_hot_fraction: ratio(s.truth_hot as f64, s.bytes),
             events_total: s.events,
             pending_events: eng.pending_events(),
             fired: pop_stats(eng, hidden_fired.into_iter(), tick),

@@ -19,8 +19,8 @@ def load(path):
             d = json.loads(line)
             if d.get("kind") == "header":
                 header = d
-            elif d.get("kind") == "metrics":
-                rows.append(d)
+            elif d.get("kind") == "metrics" and d.get("accuracy") is not None:
+                rows.append(d)  # windows with no byte (e.g. after the corpus ended) are skipped
     return header, rows
 
 
@@ -45,7 +45,7 @@ def main():
     if not rows:
         sys.exit(f"no metrics rows in {path}")
 
-    fig, ax = plt.subplots(3, 2, figsize=(13, 11), constrained_layout=True)
+    fig, ax = plt.subplots(4, 2, figsize=(13, 14), constrained_layout=True)
     fig.suptitle(f"Lucy — {header.get('corpus', path)}")
 
     a = ax[0][0]
@@ -100,6 +100,25 @@ def main():
     a.set_title("Homeostasis")
     a.legend(loc="upper left")
     b.legend(loc="upper right")
+
+    # Watch list (Phase 1 -> 2): report if reverb > ~60 % or theta keeps falling.
+    a = ax[3][0]
+    a.plot(*series(rows, "reservoir", "theta_mean"), label="theta_eff (reservoir mean)")
+    a.plot(*series(rows, "fired", "theta_mean"), label="theta_eff (fired cells)", alpha=0.6)
+    a.set_yscale("log")
+    b = a.twinx()
+    b.plot(*series(rows, "reverb_fraction"), color="C3", label="reverb fraction")
+    b.axhline(0.6, color="C3", ls="--", label="reverb alarm (60 %)")
+    b.set_ylim(0, 1)
+    a.set_title("Watch: theta drift and reverberation")
+    a.legend(loc="upper left")
+    b.legend(loc="upper right")
+
+    a = ax[3][1]
+    a.plot(*series(rows, "surprise_temperature"), label="tau (observatory-only calibration)")
+    a.set_yscale("log")
+    a.set_title("Surprise calibration temperature")
+    a.legend()
 
     for row in ax:
         for a in row:
