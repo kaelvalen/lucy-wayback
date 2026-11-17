@@ -57,6 +57,8 @@ struct Msg {
 struct Bucket {
     sense: usize,
     deliver: Vec<Msg>,
+    /// Delivery order: `(dst << 32) | insertion index`, sorted once when the tick starts delivering.
+    order: Vec<u64>,
     delivered: usize,
     fire: Vec<(u32, u32)>,
     fired: usize,
@@ -179,9 +181,18 @@ impl Scheduler {
             }
             if b.delivered < b.deliver.len() {
                 if b.delivered == 0 {
-                    b.deliver.sort_by_key(|m| m.dst); // stable: per-cell insertion order kept
+                    // Sort 8-byte keys, not 40-byte messages; keys are unique, so this equals a
+                    // stable sort by destination (per-cell insertion order kept).
+                    b.order.clear();
+                    b.order.extend(
+                        b.deliver
+                            .iter()
+                            .enumerate()
+                            .map(|(i, m)| (u64::from(m.dst) << 32) | i as u64),
+                    );
+                    b.order.sort_unstable();
                 }
-                let msg = b.deliver[b.delivered];
+                let msg = b.deliver[b.order[b.delivered] as u32 as usize];
                 b.delivered += 1;
                 self.in_wheel -= 1;
                 let m = b.message(&msg);
@@ -227,6 +238,7 @@ impl Scheduler {
         let b = &mut self.buckets[t as usize % WHEEL];
         debug_assert!(!b.remaining(), "recycling a tick with pending events");
         b.deliver.clear();
+        b.order.clear();
         b.fire.clear();
         b.arena.clear();
         b.delivered = 0;
@@ -259,10 +271,16 @@ impl Scheduler {
                     payload: Payload::Arrive,
                 });
             }
-            let mut deliver = b.deliver[b.delivered..].to_vec();
-            if b.delivered == 0 {
-                deliver.sort_by_key(|m| m.dst);
-            }
+            let deliver: Vec<Msg> = if b.delivered == 0 {
+                let mut d = b.deliver.clone();
+                d.sort_by_key(|m| m.dst);
+                d
+            } else {
+                b.order[b.delivered..]
+                    .iter()
+                    .map(|&k| b.deliver[k as u32 as usize])
+                    .collect()
+            };
             for msg in &deliver {
                 let payload = Payload::Deliver {
                     edge: msg.edge,
@@ -350,6 +368,20 @@ mod tests {
         assert_eq!(listed, want);
         assert_eq!(edges, vec![1, 2, 0], "per-cell insertion order kept");
         assert_eq!((s.pending(), s.peek_t()), (0, None));
+    }
+
+    #[test]
+    fn listing_mid_tick_matches_remaining_order() {
+        let mut s = Scheduler::default();
+        let h = s.push_state(1, &ZERO);
+        for (dst, e) in [(9, 0), (2, 1), (5, 2), (2, 3)] {
+            s.push_deliver(1, dst, edge(e), 1.0, h, Wave::default());
+        }
+        s.pop(); // first delivery (cell 2, edge 1) consumed
+        let listed: Vec<_> = s.sorted().iter().map(|e| e.cell).collect();
+        assert_eq!(listed, vec![2, 5, 9]);
+        let rest: Vec<_> = std::iter::from_fn(|| s.pop()).map(|e| e.cell).collect();
+        assert_eq!(rest, listed);
     }
 
     #[test]
