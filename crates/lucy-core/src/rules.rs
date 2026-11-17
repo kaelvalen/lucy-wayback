@@ -170,10 +170,10 @@ pub fn edge_vitality(v: S, dt: u64, p: &Params) -> S {
     v * decay(dt, p.t_v) + p.alpha_v
 }
 
-/// TENSION of a hidden cell: `e = u - Q h_prev`.
+/// TENSION of a hidden cell: `e = u - Q h`, `h` = the state its last fire produced.
 #[inline]
-pub fn prediction_error(u: &V, q: &M, h_prev: &V) -> V {
-    sub(u, &matvec(q, h_prev))
+pub fn prediction_error(u: &V, q: &M, h: &V) -> V {
+    sub(u, &matvec(q, h))
 }
 
 /// Normalized LMS: `Q += eta_q / (eps + |h_prev|^2) * e h_prev^T` (fix 3, stable for eta_q < 2).

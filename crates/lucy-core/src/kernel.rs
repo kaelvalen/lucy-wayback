@@ -153,8 +153,9 @@ impl Engine {
         self.touch(c, t);
         let cells = &mut self.g.cells;
         cells.fire_pending[c] = false;
-        let e = rules::prediction_error(&cells.u[c], &cells.q[c], &cells.h_prev[c]);
-        rules::nlms(&mut cells.q[c], &e, &cells.h_prev[c], &self.p);
+        // Predict this cycle's input from the state the last fire produced (h, before updating it).
+        let e = rules::prediction_error(&cells.u[c], &cells.q[c], &cells.h[c]);
+        rules::nlms(&mut cells.q[c], &e, &cells.h[c], &self.p);
         // Hidden credit: inputs move toward the prediction (toward = -e).
         self.learn_in_gains(c, &neg(&e));
         let cells = &mut self.g.cells;
@@ -339,6 +340,26 @@ mod tests {
         while eng.next_time().is_some_and(|t| t <= last_t) {
             eng.step(src);
         }
+    }
+
+    /// Q predicts from the state produced by the last fire (h), not the one before (h_prev).
+    #[test]
+    fn prediction_uses_current_state() {
+        let (mut eng, hid) = tiny();
+        eng.g.cells.h[hid] = basis(2);
+        eng.g.cells.h_prev[hid] = basis(5); // must be ignored
+        eng.g.cells.q[hid][0][2] = 0.4;
+        let mut src = b"A".iter().copied();
+        run_to(&mut eng, &mut src, 1);
+        // u = 0.5 e0, Q h = 0.4 e0 -> e = 0.1 e0, tau = 0.05 * 0.01.
+        assert!((eng.g.cells.tau[hid] - 0.0005).abs() < 1e-8);
+        // NLMS on h = e2: Q[0][2] += 0.1 / (1e-3 + 1) * 0.1; nothing learned on the e5 column.
+        let q = eng.g.cells.q[hid];
+        assert!((q[0][2] - (0.4 + 0.01 / 1.001)).abs() < 1e-7, "{}", q[0][2]);
+        assert_eq!(q[0][5], 0.0);
+        // Then h_prev = old h, h = tanh(W h + u) with W = 0.
+        assert_eq!(eng.g.cells.h_prev[hid], basis(2));
+        assert!((eng.g.cells.h[hid][0] - 0.5f32.tanh()).abs() < 1e-7);
     }
 
     #[test]

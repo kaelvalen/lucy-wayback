@@ -83,8 +83,8 @@ schedule FIRE at `t`. Input cells never fire from messages; they are marked hot.
 **Hidden FIRE** at `t`:
 
 ```
-e      = u - Q h_prev                                   // tension
-Q     += eta_q / (nlms_eps + |h_prev|^2) * e h_prev^T   // normalized LMS (fix 3)
+e      = u - Q h          // h = state the last fire produced  // tension
+Q     += eta_q / (nlms_eps + |h|^2) * e h^T                     // normalized LMS (fix 3)
 gain_i += eta_g * dot(-e, m_i) / D   for each credit    // inputs move toward the prediction
 gain_i *= gain_norm0 / |in-gains|    for all in-edges   // synaptic scaling (fix 4)
 h_prev = h ;  h = tanh(W h + clip_rms(u))               // clip_rms: |u| <= sqrt(D) (fix 6)
@@ -204,6 +204,5 @@ near-constant. A unit test also asserts that dormant cells are never touched (`l
    8 bits. Even the 10 %-accuracy readout scores ≈ 13.5 bits. Proposed: calibrate the temperature
    online in the observatory (one scalar, fitted by log-loss, never fed back into the dynamics),
    or mix with a uniform floor.
-3. **Prediction lag.** The spec computes `e = u − Q·h_prev` *before* `h_prev = h`, so Q predicts
-   input from the state two fires back. Implemented as written; switching to the current `h` is a
-   one-line change in `kernel::fire`.
+3. **Prediction lag** (fixed after `phase1-baseline`). The baseline computed `e = u − Q·h_prev`
+   before `h_prev = h`, so Q predicted from the state two fires back. Now `e = u − Q·h`.
