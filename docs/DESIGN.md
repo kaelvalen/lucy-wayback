@@ -177,10 +177,12 @@ Every M ticks (`--metrics-every`), one JSON line. The first line is a header wit
 config and params. Metrics:
 
 - `accuracy` (primary): next-byte guess accuracy per byte in the window.
-- `surprise_bits`: `-log2 softmax(score / tau)[true byte]`, where `tau` is fitted online **in the
-  observatory only** (`observe::Calibrator`): each byte is scored with the current `beta = 1/tau`
-  first (prequential), then `beta` takes a damped stochastic Newton step on the log-loss
-  (`grad = E_p[s] - s_true`, curvature = running `Var_p[s]`, rate 0.01 ≈ 100 bytes of memory).
+- `surprise_bits`: `-log2 softmax(ln(max(score, 1e-4)) / tau)[true byte]`, where `tau` is fitted
+  online **in the observatory only** (`observe::Calibrator`). Scores are LMS probability estimates,
+  so they enter in the log domain (a linear `score / tau` softmax cannot express the thousands-fold
+  ratios between byte probabilities). Each byte is scored with the current `beta = 1/tau` first
+  (prequential), then `beta` takes a damped stochastic Newton step on the log-loss
+  (`grad = E_p[x] - x_true`, curvature = running `Var_p[x]`, rate 0.01 ≈ 100 bytes of memory).
   The dynamics never read it, so changing the calibrator cannot change the state hash.
   `surprise_temperature` reports `tau`.
 - `tension`: mean |e|² of hidden fires in the window.

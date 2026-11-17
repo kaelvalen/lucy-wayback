@@ -415,10 +415,11 @@ mod tests {
         // Byte A: every score is 0 -> guess byte 0 (wrong), 8 bits. A learns: prior 0 -> 0.005.
         // Byte B: scores = priors (A 0.005, rest 0; Q_B = 0 so B's trace adds nothing yet)
         // -> guess A (wrong). Calibrated surprise with the initial beta = 1:
-        // log2(255 + e^0.005) = 8.0000282 bits (byte A: all scores equal -> 8 bits).
+        // log-domain logits, A = ln 0.005 vs floor ln 1e-4 (ratio 50): log2(50 + 255) = 8.252665
+        // bits (byte A: all scores equal -> 8 bits).
         assert_eq!((eng.stats.bytes_total, eng.stats.correct), (2, 0));
         let s_b = eng.stats.surprise_sum - 8.0;
-        assert!((s_b - 8.0000282).abs() < 1e-6, "{s_b}");
+        assert!((s_b - 8.252665).abs() < 1e-5, "{s_b}");
         let (pa, pb) = (
             eng.senses.prior(A as usize, 2, &eng.p),
             eng.senses.prior(B as usize, 2, &eng.p),

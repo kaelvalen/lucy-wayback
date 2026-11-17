@@ -21,9 +21,11 @@ pub const RESERVOIR: usize = 1024;
 /// Online fit of the softmax inverse temperature `beta = 1 / tau` that turns readout scores into
 /// a calibrated next-byte distribution. Observatory only: the dynamics never read it.
 ///
-/// Each byte is scored with the current beta first (prequential, so the reported surprise is
-/// honest), then beta takes a damped stochastic Newton step on the log-loss:
-/// `dL/dbeta = E_p[s] - s_true`, `d2L/dbeta2 = Var_p[s]` (running mean).
+/// Scores are probability-like (LMS toward 1/0), so they enter in the log domain:
+/// `p = softmax(beta * x)`, `x = ln(max(score, SCORE_FLOOR))`. Each byte is scored with the
+/// current beta first (prequential, so the reported surprise is honest), then beta takes a damped
+/// stochastic Newton step on the log-loss: `dL/dbeta = E_p[x] - x_true`,
+/// `d2L/dbeta2 = Var_p[x]` (running mean).
 #[derive(Debug, Clone)]
 pub struct Calibrator {
     pub beta: f64,
@@ -32,6 +34,8 @@ pub struct Calibrator {
 
 /// Step and averaging rate of the calibrator: ~100 bytes of memory.
 const CALIBRATION_RATE: f64 = 0.01;
+/// Scores at or below this count as "no evidence" (well below a uniform 1/256).
+const SCORE_FLOOR: f64 = 1e-4;
 
 impl Default for Calibrator {
     fn default() -> Self {
@@ -43,32 +47,34 @@ impl Default for Calibrator {
 }
 
 impl Calibrator {
-    /// Surprise in bits of `truth` under `softmax(beta * scores)`, then update beta.
+    /// Surprise in bits of `truth` under `softmax(beta * ln(max(scores, floor)))`, then update beta.
     pub fn observe(&mut self, scores: &[S], truth: usize) -> f64 {
-        let logits: Vec<f64> = scores.iter().map(|&s| self.beta * s as f64).collect();
+        // Centered on the floor, so equal scores give exactly equal x (no rounding-noise variance).
+        let x: Vec<f64> = scores
+            .iter()
+            .map(|&s| (s as f64).max(SCORE_FLOOR).ln() - SCORE_FLOOR.ln())
+            .collect();
+        let logits: Vec<f64> = x.iter().map(|&x| self.beta * x).collect();
         let mx = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let w: Vec<f64> = logits.iter().map(|l| (l - mx).exp()).collect();
         let z: f64 = w.iter().sum();
         let surprise = (mx + z.ln() - logits[truth]) / std::f64::consts::LN_2;
-        let mean: f64 = w
-            .iter()
-            .zip(scores)
-            .map(|(w, &s)| w * s as f64)
-            .sum::<f64>()
-            / z;
+        let mean: f64 = w.iter().zip(&x).map(|(w, x)| w * x).sum::<f64>() / z;
         let var: f64 = w
             .iter()
-            .zip(scores)
-            .map(|(w, &s)| w * (s as f64 - mean).powi(2))
+            .zip(&x)
+            .map(|(w, x)| w * (x - mean).powi(2))
             .sum::<f64>()
             / z;
-        if var > 0.0 {
+        let hi = x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let lo = x.iter().copied().fold(f64::INFINITY, f64::min);
+        if hi > lo && var > 0.0 {
             self.curvature = if self.curvature == 0.0 {
                 var
             } else {
                 self.curvature + CALIBRATION_RATE * (var - self.curvature)
             };
-            let grad = mean - scores[truth] as f64;
+            let grad = mean - x[truth];
             self.beta = (self.beta - CALIBRATION_RATE * grad / self.curvature).max(0.0);
         }
         surprise
@@ -693,8 +699,9 @@ mod tests {
     fn calibrator_uniform_and_fit() {
         let mut c = Calibrator::default();
         assert_eq!(c.observe(&[0.0; 256], 7), 8.0);
-        // 4 classes; the readout marks one with score 1. It is right half the time, otherwise the
-        // truth is one of the other 3. Log-loss optimum: e^beta / (e^beta + 3) = 1/2 -> beta = ln 3.
+        // 4 classes; the readout marks one with score 1, the rest score 1/e (log gap exactly 1).
+        // It is right half the time, otherwise the truth is one of the other 3.
+        // Log-loss optimum: e^beta / (e^beta + 3) = 1/2 -> beta = ln 3.
         let mut c = Calibrator::default();
         for i in 0..40_000usize {
             let marked = i % 4;
@@ -703,7 +710,7 @@ mod tests {
             } else {
                 (marked + 1 + (i / 2) % 3) % 4
             };
-            let mut s = [0.0; 4];
+            let mut s = [(-1.0f32).exp(); 4];
             s[marked] = 1.0;
             c.observe(&s, truth);
         }
