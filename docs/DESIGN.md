@@ -115,6 +115,30 @@ fixed 256-wide scan (sensory surface size, independent of N):
 
 Decision 4 (amended): input cells have Q (their readout), still no W. Priors live in `Senses`.
 
+## Structural plasticity (`plasticity.rs`)
+
+First slice: co-activation edge growth into input cells. Every `consolidate_every` bytes the
+engine replays its fire ring since the last pass (offline, sleep-like):
+
+1. **Replay.** A byte window = hidden cells that fired between two byte arrivals (input-cell fires
+   in the ring). Count `N(h, b)` (h fired in the window before byte b), `f_h`, `n_b`, windows `W`.
+2. **Grow.** For each byte cell, up to `grow_per_cell` unconnected hidden cells with the largest
+   *excess* co-occurrence `N(h,b) − f_h·n_b/W > 0` get an edge `h → b` (gain `grow_gain`,
+   vitality = `N(h,b)`, what it already earned). Excess, not raw count: raw counts would route
+   every new edge to the most frequent byte (space).
+3. **Prune** each input cell's in-edges: decayed vitality < `prune_vitality` dies; over
+   `input_in_cap`, lowest vitality dies first (ties → lower edge index).
+
+**Vitality of edges into input cells is earned, not used:** it is credited (`+alpha_v`, lazily
+decayed with `t_v`) when the edge carried a message into the cell whose byte then really arrived,
+and not on transmit. With homeostatic firing rates, usage vitality is ≈ equal for every edge
+and a new edge (vitality ≈ 1) would always lose to established ones (≈ 500); earned vitality is a
+decayed co-occurrence count, the same statistic growth ranks by. Edges into hidden cells keep
+usage vitality. No dynamics read vitality, so with consolidation off accuracy is unchanged.
+
+Cost per pass ∝ fires since the last pass + the 256 input cells' in-edges. Ordered maps and index
+tie-breaks keep it deterministic (tested).
+
 ## Constants (`Params`, overridable with `--params file.json`)
 
 | Constant | Default | Rationale |
@@ -131,6 +155,11 @@ Decision 4 (amended): input cells have Q (their readout), still no W. Priors liv
 | `eta_g` | 0.05 | Credit step. Normalised by D; synaptic scaling removes any net growth. |
 | `alpha_tau` | 0.05 | tau averages over ~20 fires. |
 | `alpha_v` | 1.0 | Unit vitality per use (scale is arbitrary until death exists). |
+| `consolidate_every` | 1000 bytes | Consolidation period. Must replay before the ring wraps: 1000 bytes × K × ~21 fires/tick ≈ 170 k events < 262 k ring slots (`consolidation_lost_events` reports any loss). 0 = off. |
+| `grow_per_cell` | 2 | New hidden→input edges per byte cell per pass: slow enough that pruning can keep up. |
+| `grow_gain` | 0.1 | New edges start small; synaptic scaling then folds them into the cell's fixed gain budget. |
+| `prune_vitality` | 0.5 | An in-edge of an input cell must keep earning: a single co-occurrence decays below 0.5 after ≈ 69 k ticks (≈ 8.7 k bytes). |
+| `input_in_cap` | 32 | Homeostatic in-degree cap of input cells (2× the seed fan-in). Over it, the lowest-vitality edge dies. |
 | `eta_bias` | 0.005 | Prior LMS step: averages byte frequency over ~200 bytes, so frequent bytes are tracked within a few utterances while one-off bytes barely move it. |
 
 Seed constants (`SeedConfig`, CLI flags): 4096 hidden, fanout 8 (hidden→hidden, distinct, no

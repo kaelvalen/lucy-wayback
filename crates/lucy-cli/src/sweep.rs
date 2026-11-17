@@ -53,7 +53,13 @@ fn jobs(seeds: &[u64], axes: &[(String, Vec<f64>)], base: &Map<String, Value>) -
             let mut params = base.clone();
             let mut name = format!("s{seed}");
             for (k, v) in point {
-                params.insert(k.clone(), json!(v));
+                // Integral values as JSON integers, so integer params (e.g. periods) parse.
+                let val = if v.fract() == 0.0 && v.abs() < 1e15 {
+                    json!(*v as i64)
+                } else {
+                    json!(v)
+                };
+                params.insert(k.clone(), val);
                 name.push_str(&format!("_{k}={v}"));
             }
             out.push(Job { name, seed, params });

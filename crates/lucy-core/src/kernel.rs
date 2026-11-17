@@ -18,6 +18,8 @@ pub struct Engine {
     pub ring: Ring,
     pub stats: Stats,
     pub(crate) sched: Scheduler,
+    /// Structural plasticity bookkeeping (when and from where to replay the ring).
+    pub plasticity: crate::plasticity::Plasticity,
     /// Decay factor tables derived from `p` (rebuild if `p` changes).
     decay: rules::Decay,
     /// Logical clock: time of the last processed event.
@@ -30,6 +32,7 @@ impl Engine {
         sched.push_arrive(0);
         Self {
             decay: rules::Decay::new(&p),
+            plasticity: Default::default(),
             p,
             g,
             senses,
@@ -207,8 +210,11 @@ impl Engine {
         let state = sched.push_state(t + 1, &h);
         for &e in &g.cells.outs[c] {
             let i = e as usize;
-            edges.vitality[i] = rules::edge_vitality(edges.vitality[i], t - edges.last_t[i], p);
-            edges.last_t[i] = t;
+            // Edges into input cells earn vitality from reality (at arrival), not from use.
+            if g.cells.kind[edges.dst[i] as usize] != Kind::Input {
+                edges.vitality[i] = rules::edge_vitality(edges.vitality[i], t - edges.last_t[i], p);
+                edges.last_t[i] = t;
+            }
             let id = edges.slots.id(e);
             sched.push_deliver(
                 t + 1,
@@ -232,6 +238,11 @@ impl Engine {
     fn arrive(&mut self, t: u64, src: &mut dyn Iterator<Item = u8>) {
         let Some(byte) = src.next() else { return };
         let b = byte as usize;
+        let every = u64::from(self.p.consolidate_every);
+        if every > 0 && self.stats.bytes_total > 0 && self.stats.bytes_total.is_multiple_of(every) {
+            let rep = crate::plasticity::consolidate(self, t);
+            self.stats.on_consolidation(&rep);
+        }
         let mut touched = self.senses.take_hot();
         let truth_hot = touched.contains(&(b as u32));
         self.stats.on_coverage(touched.len(), truth_hot);
@@ -275,6 +286,18 @@ impl Engine {
             let u = cells.u[c];
             rules::nlms(&mut cells.q[c], &e, &u, &self.p);
             self.learn_in_gains(c, &toward);
+            if truth {
+                // In-edges that fed the cell whose byte really arrived earn vitality.
+                let Graph { cells, edges } = &mut self.g;
+                for cr in &cells.credit[c] {
+                    if edges.slots.is_live(cr.edge) {
+                        let i = cr.edge.idx as usize;
+                        edges.vitality[i] =
+                            rules::edge_vitality(edges.vitality[i], t - edges.last_t[i], &self.p);
+                        edges.last_t[i] = t;
+                    }
+                }
+            }
             self.senses.learn_prior(c, n, truth, scores[c], &self.p);
             self.g.cells.clear_input(c);
         }

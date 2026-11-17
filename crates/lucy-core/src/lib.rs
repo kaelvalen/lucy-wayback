@@ -5,6 +5,7 @@ pub mod buffer;
 pub mod kernel;
 pub mod num;
 pub mod observe;
+pub mod plasticity;
 pub mod rules;
 pub mod scheduler;
 pub mod seed;

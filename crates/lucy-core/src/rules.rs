@@ -35,6 +35,16 @@ pub struct Params {
     pub alpha_v: S,
     /// LMS step of each input cell's prior (bias); also its per-byte decay when the cell is cold.
     pub eta_bias: S,
+    /// Structural plasticity: consolidate (replay, grow, prune) every this many bytes; 0 = off.
+    pub consolidate_every: u32,
+    /// New hidden -> input edges per input cell per consolidation pass.
+    pub grow_per_cell: u32,
+    /// Gain of a newly grown edge (synaptic scaling then folds it into the cell's budget).
+    pub grow_gain: S,
+    /// In-edges of input cells whose earned vitality decays below this die.
+    pub prune_vitality: S,
+    /// In-degree cap of input cells; over it, the lowest-vitality edge dies.
+    pub input_in_cap: u32,
 }
 
 impl Default for Params {
@@ -53,6 +63,11 @@ impl Default for Params {
             alpha_tau: 0.05,
             alpha_v: 1.0,
             eta_bias: 0.005,
+            consolidate_every: 1000,
+            grow_per_cell: 2,
+            grow_gain: 0.1,
+            prune_vitality: 0.5,
+            input_in_cap: 32,
         }
     }
 }
@@ -88,6 +103,15 @@ impl Params {
                 "eta_q must be in [0, 2) for NLMS stability, got {}",
                 self.eta_q
             ));
+        }
+        if !(self.grow_gain.is_finite()
+            && self.prune_vitality.is_finite()
+            && self.prune_vitality >= 0.0)
+        {
+            return Err("grow_gain must be finite and prune_vitality finite and >= 0".into());
+        }
+        if self.consolidate_every > 0 && self.input_in_cap == 0 {
+            return Err("input_in_cap must be >= 1 when consolidation is on".into());
         }
         if !(self.eta_bias >= 0.0 && self.eta_bias < 1.0) {
             return Err(format!("eta_bias must be in [0, 1), got {}", self.eta_bias));

@@ -167,6 +167,10 @@ pub struct Stats {
     pub reverb_fires: u64,
     /// Readout coverage: hot input cells summed over bytes, and bytes whose true cell was hot.
     pub hot_inputs: u64,
+    /// Structural plasticity in the window (all consolidation passes).
+    pub edges_grown: u64,
+    pub edges_pruned: u64,
+    pub lost_events: u64,
     pub truth_hot: u64,
     pub max_tick_fires: u64,
     /// Distinct cells fired this window (stamp dedup).
@@ -200,6 +204,12 @@ impl Stats {
     pub fn on_coverage(&mut self, hot: usize, truth_hot: bool) {
         self.hot_inputs += hot as u64;
         self.truth_hot += u64::from(truth_hot);
+    }
+
+    pub fn on_consolidation(&mut self, r: &crate::plasticity::PassReport) {
+        self.edges_grown += r.grown;
+        self.edges_pruned += r.pruned;
+        self.lost_events += r.lost_events;
     }
 
     pub fn on_hidden_fire(&mut self, e2: S, wave: Wave) {
@@ -240,6 +250,9 @@ impl Stats {
         self.depth_windows = 0;
         self.reverb_fires = 0;
         self.hot_inputs = 0;
+        self.edges_grown = 0;
+        self.edges_pruned = 0;
+        self.lost_events = 0;
         self.truth_hot = 0;
         self.max_tick_fires = 0;
         self.cur_tick_fires = 0;
@@ -331,6 +344,11 @@ pub struct Metrics {
     pub hot_inputs_per_byte: Option<f64>,
     /// Fraction of bytes whose own input cell received any message before it arrived.
     pub truth_hot_fraction: Option<f64>,
+    /// Structural plasticity in the window, and mean in-degree of the 256 input cells.
+    pub edges_grown: u64,
+    pub edges_pruned: u64,
+    pub consolidation_lost_events: u64,
+    pub input_in_degree: f64,
     pub events_total: u64,
     pub pending_events: usize,
     /// Hidden cells that fired in the window (exact).
@@ -477,6 +495,13 @@ impl Observatory {
             reverb_fraction: ratio(s.reverb_fires as f64, s.hidden_fires),
             hot_inputs_per_byte: ratio(s.hot_inputs as f64, s.bytes),
             truth_hot_fraction: ratio(s.truth_hot as f64, s.bytes),
+            edges_grown: s.edges_grown,
+            edges_pruned: s.edges_pruned,
+            consolidation_lost_events: s.lost_events,
+            input_in_degree: (0..crate::senses::N_BYTES)
+                .map(|b| eng.g.cells.ins[b].len())
+                .sum::<usize>() as f64
+                / crate::senses::N_BYTES as f64,
             events_total: s.events,
             pending_events: eng.pending_events(),
             fired: pop_stats(eng, hidden_fired.into_iter(), tick),
@@ -552,6 +577,8 @@ pub fn state_hash(eng: &Engine) -> u64 {
     for &n in &eng.senses.bias_seen {
         h.u64(n);
     }
+    h.u64(eng.plasticity.next_seq);
+    h.u64(eng.plasticity.passes);
     h.u64(eng.ring.total());
     for ev in eng.ring.iter() {
         h.u64(((ev.cell.idx as u64) << 32) | ev.cell.generation as u64);
