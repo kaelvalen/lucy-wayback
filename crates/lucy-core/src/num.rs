@@ -45,6 +45,16 @@ pub fn matvec(m: &M, x: &V) -> V {
     std::array::from_fn(|i| dot(&m[i], x))
 }
 
+/// `m^T x`
+#[inline]
+pub fn matvec_t(m: &M, x: &V) -> V {
+    let mut y = [0.0; D];
+    for (row, &xi) in m.iter().zip(x) {
+        axpy(&mut y, xi, row);
+    }
+    y
+}
+
 /// `m += s * a b^T`
 #[inline]
 pub fn outer_add(m: &mut M, a: &V, b: &V, s: S) {

@@ -33,6 +33,8 @@ pub struct Params {
     pub alpha_tau: S,
     /// Vitality added per use (cell fire / edge transmit).
     pub alpha_v: S,
+    /// LMS step of each input cell's prior (bias); also its per-byte decay when the cell is cold.
+    pub eta_bias: S,
 }
 
 impl Default for Params {
@@ -50,6 +52,7 @@ impl Default for Params {
             eta_g: 0.05,
             alpha_tau: 0.05,
             alpha_v: 1.0,
+            eta_bias: 0.005,
         }
     }
 }
@@ -85,6 +88,9 @@ impl Params {
                 "eta_q must be in [0, 2) for NLMS stability, got {}",
                 self.eta_q
             ));
+        }
+        if !(self.eta_bias >= 0.0 && self.eta_bias < 1.0) {
+            return Err(format!("eta_bias must be in [0, 1), got {}", self.eta_bias));
         }
         if !(self.alpha_tau > 0.0 && self.alpha_tau <= 1.0) {
             return Err(format!(
@@ -212,6 +218,27 @@ pub fn activate(w: &M, h: &V, u: &V) -> V {
     let mut x = matvec(w, h);
     axpy(&mut x, 1.0, &clip_rms(u));
     x.map(S::tanh)
+}
+
+/// Input-cell readout: the cell predicts its own byte code from its input, `pred = Q u`, and
+/// scores `prior + dot(pred, code) / D` (1 = "my byte comes next", 0 = "not mine").
+pub fn readout(q: &M, u: &V, code: &V, prior: S) -> (V, S) {
+    let pred = matvec(q, u);
+    let score = prior + dot(&pred, code) / D as S;
+    (pred, score)
+}
+
+/// Prior (bias) LMS on the score error: `prior += eta_bias * (target - score)`, target 1 or 0.
+#[inline]
+pub fn bias_step(prior: S, truth: bool, score: S, p: &Params) -> S {
+    prior + p.eta_bias * (S::from(u8::from(truth)) - score)
+}
+
+/// A cold input cell scores exactly its prior and its target is 0, so each byte it sits out is
+/// `bias *= 1 - eta_bias`: applied lazily in closed form, keeping learning O(hot).
+#[inline]
+pub fn bias_idle(bias: S, bytes: u64, p: &Params) -> S {
+    if bytes == 0 { bias } else { bias * (1.0 - p.eta_bias).powf(bytes as S) }
 }
 
 #[inline]
@@ -355,6 +382,42 @@ mod tests {
         let h = activate(&ZERO_M, &ZERO, &u);
         assert!(close(h[0], 0.5f32.tanh(), 1e-7));
         assert_eq!(h[1], 0.0);
+    }
+
+    #[test]
+    fn readout_and_prior_hand_cases() {
+        let p = Params::default();
+        let mut q = ZERO_M;
+        q[1][0] = 2.0;
+        let mut u = ZERO;
+        u[0] = 0.5;
+        let mut code = ZERO;
+        code[1] = 1.0;
+        code[2] = -1.0;
+        let (pred, s) = readout(&q, &u, &code, 0.25);
+        assert_eq!(pred, basis(1));
+        assert!(close(s, 0.25 + 1.0 / 32.0, 1e-7));
+        assert!(close(bias_step(0.2, true, 0.6, &p), 0.2 + 0.005 * 0.4, 1e-7));
+        // Lazy idle decay == k explicit cold updates (score = prior, target 0).
+        let mut b = 0.3;
+        for _ in 0..7 {
+            b = bias_step(b, false, b, &p);
+        }
+        assert!(close(bias_idle(0.3, 7, &p), b, 1e-6));
+        assert_eq!(bias_idle(0.3, 0, &p), 0.3);
+    }
+
+    /// A stream of i.i.d. bytes: priors converge to byte frequencies (frequency is learnable).
+    #[test]
+    fn priors_learn_frequencies() {
+        let p = Params { eta_bias: 0.01, ..Params::default() };
+        let (mut a, mut b) = (0.0, 0.0);
+        for i in 0..5000 {
+            let is_a = i % 4 != 0; // a: 75 %, b: 25 %
+            a = bias_step(a, is_a, a, &p);
+            b = bias_step(b, !is_a, b, &p);
+        }
+        assert!(close(a, 0.75, 0.05) && close(b, 0.25, 0.05), "{a} {b}");
     }
 
     #[test]

@@ -95,17 +95,25 @@ for each out-edge: vitality = vitality*exp(-dt/t_v) + alpha_v ; send gain*h, arr
 ring.push(cell, t, quantize(h))
 ```
 
-**Byte arrival** (byte `b` at `t`), cost O(hot), never a pass over all 256:
+**Byte arrival** (byte number `n`, value `b`, at `t`). Learning is O(hot); the readout is a
+fixed 256-wide scan (sensory surface size, independent of N):
 
-1. Touch every hot input cell and `b`. Read the prediction: guess = argmax heat (ties → lowest
-   byte, none hot → no guess); surprise = `-log2 softmax(heat / σ_heat)[b]` over all 256 (cold
-   cells are 0).
-2. Reality teaches: `e = code_b - u_b` for `b`, `e = -u_c` for every other hot cell;
-   `gain_i += eta_g * dot(e, m_i) / D`, then synaptic scaling; `tau = ema(tau, |e|^2)`; clear the
-   window (u, heat, credit).
+1. Readout. Every input cell `c` scores "my byte comes next":
+   `pred_c = Q_c u_c`, `score_c = prior_c + dot(pred_c, code_c) / D` (1 = mine, 0 = not mine).
+   A cold cell has `u = 0`, so it scores exactly its prior. Guess = argmax score (ties → lowest
+   byte); surprise from the scores (see Observatory).
+2. Reality teaches every touched cell (hot cells and `b`): target `code_b` for `b`, `0` for hot
+   wrong cells; `e = target - pred`;
+   - `Q_c += eta_q / (nlms_eps + |u_c|^2) * e u_c^T` (normalized LMS, the hidden-cell rule);
+   - in-gains: `toward = Q_c^T e` (the readout error mapped into the cell's input space), then
+     `gain_i += eta_g * dot(toward, m_i) / D` and synaptic scaling;
+   - `prior_c += eta_bias * (1[c = b] - score_c)`; `tau = ema(tau, |e|^2)`; clear the window.
+   Cold wrong cells need no work: `Q u = 0` already, and their prior update (target 0, score =
+   prior) is `prior *= 1 - eta_bias` per byte, applied lazily in closed form on next use.
+   The priors therefore converge to byte frequencies (tested).
 3. Force `b` to fire: `h_prev = h; h = code_b`; fire bookkeeping; send to out-edges at `t + 1`.
 
-Input cells have no W/Q of their own (decision 4); only their in-gains learn.
+Decision 4 (amended): input cells have Q (their readout), still no W. Priors live in `Senses`.
 
 ## Constants (`Params`, overridable with `--params file.json`)
 
@@ -123,6 +131,7 @@ Input cells have no W/Q of their own (decision 4); only their in-gains learn.
 | `eta_g` | 0.05 | Credit step. Normalised by D; synaptic scaling removes any net growth. |
 | `alpha_tau` | 0.05 | tau averages over ~20 fires. |
 | `alpha_v` | 1.0 | Unit vitality per use (scale is arbitrary until death exists). |
+| `eta_bias` | 0.005 | Prior LMS step: averages byte frequency over ~200 bytes, so frequent bytes are tracked within a few utterances while one-off bytes barely move it. |
 
 Seed constants (`SeedConfig`, CLI flags): 4096 hidden, fanout 8 (hidden→hidden, distinct, no
 self-loops), 16 input→hidden per input, 16 hidden→input per input (prediction pathway), gains

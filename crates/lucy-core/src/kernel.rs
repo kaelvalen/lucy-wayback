@@ -4,11 +4,11 @@
 use std::io;
 
 use crate::buffer::{FireEvent, Ring};
-use crate::num::{S, V, ZERO, axpy, neg, norm, norm2, quantize_unit, scale, sub};
+use crate::num::{S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
 use crate::observe::{Observatory, Stats};
 use crate::rules::{self, Params, Scalars};
 use crate::scheduler::{Payload, Phase, Scheduler};
-use crate::senses::{self, N_BYTES, Senses};
+use crate::senses::{self, Senses};
 use crate::store::{Credit, EdgeId, Graph, Id, Kind, Wave};
 
 pub struct Engine {
@@ -233,28 +233,49 @@ impl Engine {
         for &c in &touched {
             self.touch(c as usize, t);
         }
-        let heats: Vec<(u32, S)> = touched
+        // Readout: every input cell scores "my byte comes next". A cold cell (u = 0) scores
+        // exactly its prior; a hot one adds dot(Q u, code) / D.
+        let n = self.stats.bytes_total;
+        let mut scores = std::mem::take(&mut self.senses.scores);
+        for (c, x) in scores.iter_mut().enumerate() {
+            *x = self.senses.prior(c, n, &self.p);
+        }
+        let preds: Vec<(usize, V)> = touched
             .iter()
-            .map(|&c| (c, self.g.cells.heat[c as usize]))
+            .map(|&c| {
+                let c = c as usize;
+                let cells = &self.g.cells;
+                let (pred, score) =
+                    rules::readout(&cells.q[c], &cells.u[c], &self.senses.codes[c], scores[c]);
+                scores[c] = score;
+                (c, pred)
+            })
             .collect();
-        let guess = senses::guess(&heats);
-        let surprise = senses::surprise_bits(&heats, N_BYTES, b as u32);
-        self.stats.on_byte(guess == Some(b as u32), surprise);
+        let guess = senses::guess(&scores);
+        let surprise = senses::surprise_bits(&scores, b as u32);
+        self.stats.on_byte(guess == b as u32, surprise);
 
-        let code = self.senses.codes[b];
-        for &c in &touched {
-            let c = c as usize;
-            let target = if c == b { code } else { ZERO };
-            let err = sub(&target, &self.g.cells.u[c]);
-            self.g.cells.tau[c] = rules::ema(self.g.cells.tau[c], norm2(&err), self.p.alpha_tau);
-            // Input credit: inputs move toward reality (toward = target - u).
-            self.learn_in_gains(c, &err);
+        // Reality teaches every touched cell: pred -> code_b (true byte) or 0 (hot wrong byte).
+        // Cold wrong cells need no work: Q u = 0 already, their prior decays lazily.
+        for (c, pred) in preds {
+            let truth = c == b;
+            let target = if truth { self.senses.codes[b] } else { ZERO };
+            let e = sub(&target, &pred);
+            let cells = &mut self.g.cells;
+            cells.tau[c] = rules::ema(cells.tau[c], norm2(&e), self.p.alpha_tau);
+            // Input credit: move inputs so the cell's own readout gets closer to reality.
+            let toward = matvec_t(&cells.q[c], &e);
+            let u = cells.u[c];
+            rules::nlms(&mut cells.q[c], &e, &u, &self.p);
+            self.learn_in_gains(c, &toward);
+            self.senses.learn_prior(c, n, truth, scores[c], &self.p);
             self.g.cells.clear_input(c);
         }
+        self.senses.scores = scores;
 
         let cells = &mut self.g.cells;
         cells.h_prev[b] = cells.h[b];
-        cells.h[b] = code;
+        cells.h[b] = self.senses.codes[b];
         self.spike(
             b,
             t,
@@ -278,6 +299,7 @@ mod tests {
     use crate::num::{D, ZERO_M, basis};
     use crate::observe::{Observatory, state_hash};
     use crate::seed::{self, SeedConfig};
+    use crate::senses::N_BYTES;
     use crate::store::CellInit;
 
     const A: u32 = b'A' as u32;
@@ -286,7 +308,10 @@ mod tests {
 
     /// 256 inputs + one hidden cell H: A -> H (0.5), C -> H (0.5, silent), H -> B (1.0).
     fn tiny() -> (Engine, usize) {
-        let p = Params::default();
+        tiny_with(Params::default())
+    }
+
+    fn tiny_with(p: Params) -> (Engine, usize) {
         let mut g = Graph::default();
         let cell = |kind, log_theta| CellInit {
             kind,
@@ -341,21 +366,20 @@ mod tests {
         assert!((g[0] - 0.4998046).abs() < 1e-6, "{}", g[0]);
         assert!((g[1] - 0.5001953).abs() < 1e-6, "{}", g[1]);
 
-        // Byte B: the trace on B is the prediction -> correct guess, near-zero surprise.
-        assert_eq!((eng.stats.bytes_total, eng.stats.correct), (2, 1));
-        let s_b = eng.stats.surprise_sum - 8.0; // first byte had nothing hot: 8 bits
-        assert!((0.0..1e-4).contains(&s_b), "{s_b}");
-        // B's error: u_B = tanh(0.5) e^(-6/4) e0 = 0.103112 e0, code_B = e1
-        // -> |e|^2 = 1 + 0.103112^2, tau = 0.05 * 1.0106321.
-        assert!(
-            (eng.g.cells.tau[B as usize] - 0.0505316).abs() < 1e-6,
-            "{}",
-            eng.g.cells.tau[B as usize]
-        );
-        assert!(
-            (g[2] - 1.0).abs() < 1e-6,
-            "single in-edge: scaling restores the birth norm"
-        );
+        // Byte A: every score is 0 -> guess byte 0 (wrong), 8 bits. A learns: prior 0 -> 0.005.
+        // Byte B: scores = priors (A 0.005, rest 0; Q_B = 0 so B's trace adds nothing yet)
+        // -> guess A (wrong). sigma-softmax puts logit 256/sqrt(255) on A: 23.128 bits.
+        assert_eq!((eng.stats.bytes_total, eng.stats.correct), (2, 0));
+        let s_b = eng.stats.surprise_sum - 8.0;
+        assert!((s_b - 23.1284).abs() < 1e-3, "{s_b}");
+        let (pa, pb) = (eng.senses.prior(A as usize, 2, &eng.p), eng.senses.prior(B as usize, 2, &eng.p));
+        assert!((pa - 0.005 * 0.995).abs() < 1e-9 && (pb - 0.005).abs() < 1e-9, "{pa} {pb}");
+        // B's readout error: pred = 0, e = code_B = e1 -> tau = 0.05. NLMS on u_B =
+        // tanh(0.5) e^(-6/4) e0 = 0.103114 e0: Q_B[1][0] = 0.1 / (1e-3 + 0.0106325) * 0.103114.
+        assert!((eng.g.cells.tau[B as usize] - 0.05).abs() < 1e-7);
+        let q = eng.g.cells.q[B as usize][1][0];
+        assert!((q - 0.88643).abs() < 1e-4, "{q}");
+        assert_eq!(g[2], 1.0, "toward = Q_B^T e = 0: gain unchanged");
         assert_eq!(
             eng.g.cells.heat[B as usize], 0.0,
             "prediction window cleared on arrival"
@@ -369,6 +393,20 @@ mod tests {
             ),
             (1, 1, 0)
         );
+    }
+
+    /// Deterministic bigram A -> B: the readout must learn to call both bytes.
+    #[test]
+    fn readout_learns_a_bigram() {
+        let p = Params { target_rate: 0.1, adapt_step: 0.0, ..Params::default() };
+        let (mut eng, _) = tiny_with(p);
+        let text = b"AB".repeat(500);
+        let mut src = text.iter().copied();
+        run_to(&mut eng, &mut src, 8 * 800 - 1);
+        let before = eng.stats.correct;
+        run_to(&mut eng, &mut src, 8 * 1000);
+        let late = eng.stats.correct - before;
+        assert!(late >= 195, "late accuracy {late}/200");
     }
 
     #[test]

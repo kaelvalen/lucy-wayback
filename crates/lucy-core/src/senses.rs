@@ -1,10 +1,12 @@
 //! Byte-level sensory surface. 256 input cells (cell idx == byte value) both sense and predict:
-//! between arrivals they integrate hidden messages sub-threshold (TRACE = the prediction); an
+//! between arrivals they integrate hidden messages sub-threshold (TRACE); each cell reads its
+//! trace through its own Q into a score for "my byte comes next", plus a learned prior. An
 //! arriving byte forces its cell to fire, and reality teaches every cell that was hot.
 
 use rand::Rng;
 
 use crate::num::{S, V};
+use crate::rules::{self, Params};
 use crate::seed::{STREAM_CODES, stream};
 
 pub const N_BYTES: usize = 256;
@@ -13,6 +15,11 @@ pub struct Senses {
     /// Seed-derived code per byte, entries in {-1, +1} (inside the tanh range of cell states).
     pub codes: Vec<V>,
     pub ticks_per_byte: u64,
+    /// Per-input-cell prior expectation (score bias), valid as of byte number `bias_seen`.
+    pub bias: Vec<S>,
+    pub bias_seen: Vec<u64>,
+    /// Reused readout buffer: one score per input cell.
+    pub scores: Vec<S>,
     hot: Vec<u32>,
     is_hot: Vec<bool>,
 }
@@ -26,6 +33,9 @@ impl Senses {
         Self {
             codes,
             ticks_per_byte,
+            bias: vec![0.0; N_BYTES],
+            bias_seen: vec![0; N_BYTES],
+            scores: vec![0.0; N_BYTES],
             hot: Vec::new(),
             is_hot: vec![false; N_BYTES],
         }
@@ -39,6 +49,17 @@ impl Senses {
         }
     }
 
+    /// Prior of input cell `c` just before byte number `n` (lazy cold-byte decay applied).
+    pub fn prior(&self, c: usize, n: u64, p: &Params) -> S {
+        rules::bias_idle(self.bias[c], n - self.bias_seen[c], p)
+    }
+
+    /// Teach the prior of a touched cell at byte number `n` from its score error.
+    pub fn learn_prior(&mut self, c: usize, n: u64, truth: bool, score: S, p: &Params) {
+        self.bias[c] = rules::bias_step(self.prior(c, n, p), truth, score, p);
+        self.bias_seen[c] = n + 1;
+    }
+
     /// Hot input cells of the window just closed (insertion order); clears the set. O(hot).
     pub fn take_hot(&mut self) -> Vec<u32> {
         for &c in &self.hot {
@@ -48,40 +69,30 @@ impl Senses {
     }
 }
 
-/// Guess = hottest input cell (ties -> lowest byte); `None` if nothing is hot.
-pub fn guess(heats: &[(u32, S)]) -> Option<u32> {
-    heats
-        .iter()
-        .filter(|&&(_, h)| h > 0.0)
-        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|&(c, _)| c)
+/// Guess = highest-scoring input cell (ties -> lowest byte).
+pub fn guess(scores: &[S]) -> u32 {
+    let mut best = 0;
+    for (c, &x) in scores.iter().enumerate() {
+        if x > scores[best] {
+            best = c;
+        }
+    }
+    best as u32
 }
 
-/// `-log2 softmax(heat / sigma_heat)[truth]` over `n` cells, of which only `heats` are nonzero
-/// (the rest are implicitly 0). Scale-free: no temperature constant. O(len(heats)).
-pub fn surprise_bits(heats: &[(u32, S)], n: usize, truth: u32) -> f64 {
-    let nf = n as f64;
-    let n_cold = (n - heats.len()) as f64;
-    let sum: f64 = heats.iter().map(|&(_, h)| h as f64).sum();
-    let sum2: f64 = heats.iter().map(|&(_, h)| (h as f64).powi(2)).sum();
-    let mean = sum / nf;
-    let sigma = (sum2 / nf - mean * mean).max(0.0).sqrt();
-    if sigma == 0.0 {
-        return nf.log2();
+/// `-log2 softmax(score / sigma_score)[truth]`. Scale-free, but miscalibrated (see DESIGN.md).
+pub fn surprise_bits(scores: &[S], truth: u32) -> f64 {
+    let n = scores.len() as f64;
+    let mean = scores.iter().map(|&x| x as f64).sum::<f64>() / n;
+    let var = scores.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
+    if var == 0.0 {
+        return n.log2();
     }
-    let logit = |h: S| h as f64 / sigma;
-    let floor = if n_cold > 0.0 { 0.0 } else { f64::NEG_INFINITY };
-    let mx = heats.iter().map(|&(_, h)| logit(h)).fold(floor, f64::max);
-    let z: f64 = heats
-        .iter()
-        .map(|&(_, h)| (logit(h) - mx).exp())
-        .sum::<f64>()
-        + n_cold * (-mx).exp();
-    let l_true = heats
-        .iter()
-        .find(|&&(c, _)| c == truth)
-        .map_or(0.0, |&(_, h)| logit(h));
-    (mx + z.ln() - l_true) / std::f64::consts::LN_2
+    let sigma = var.sqrt();
+    let logits: Vec<f64> = scores.iter().map(|&x| x as f64 / sigma).collect();
+    let mx = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let z: f64 = logits.iter().map(|l| (l - mx).exp()).sum();
+    (mx + z.ln() - logits[truth as usize]) / std::f64::consts::LN_2
 }
 
 #[cfg(test)]
@@ -108,23 +119,27 @@ mod tests {
     }
 
     #[test]
-    fn guess_picks_hottest_lowest_on_tie() {
-        assert_eq!(guess(&[]), None);
-        assert_eq!(guess(&[(4, 0.0)]), None);
-        assert_eq!(guess(&[(9, 1.0), (4, 2.0), (2, 2.0)]), Some(2));
+    fn guess_picks_highest_lowest_on_tie() {
+        assert_eq!(guess(&[0.0; 4]), 0);
+        assert_eq!(guess(&[0.1, 0.5, 0.5, -1.0]), 1);
     }
 
     #[test]
     fn surprise_hand_cases() {
-        // Nothing hot: uniform over 256 -> 8 bits.
-        assert_eq!(surprise_bits(&[], 256, 65), 8.0);
-        // Only the truth is hot: logit = 256/sqrt(255) ~ 16.03, so p ~ 1 - 255 e^-16.03.
-        let s = surprise_bits(&[(65, 3.0)], 256, 65);
-        assert!(s > 0.0 && s < 1e-4, "{s}");
-        // Two equally hot cells, truth among them: ~1 bit (1.0021 by hand).
-        let s = surprise_bits(&[(1, 2.0), (2, 2.0)], 256, 2);
-        assert!((s - 1.0021).abs() < 1e-3, "{s}");
-        // Truth cold while another is hot: worse than uniform.
-        assert!(surprise_bits(&[(1, 2.0)], 256, 2) > 8.0);
+        let mut s = vec![0.0; 256];
+        assert_eq!(surprise_bits(&s, 65), 8.0);
+        s[65] = 3.0; // only the truth stands out: logit gap 256/sqrt(255) ~ 16.03
+        let x = surprise_bits(&s, 65);
+        assert!(x > 0.0 && x < 1e-4, "{x}");
+        assert!(surprise_bits(&s, 66) > 8.0);
+    }
+
+    #[test]
+    fn prior_is_lazy_and_learns() {
+        let p = Params::default();
+        let mut s = Senses::new(0, 8);
+        s.learn_prior(3, 0, true, 0.0, &p);
+        assert!((s.bias[3] - 0.005).abs() < 1e-9);
+        assert!((s.prior(3, 11, &p) - 0.005 * 0.995f32.powi(10)).abs() < 1e-9);
     }
 }

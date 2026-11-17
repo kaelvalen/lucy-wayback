@@ -386,6 +386,10 @@ pub fn state_hash(eng: &Engine) -> u64 {
         h.f32s(&[e.gain[i], e.vitality[i]]);
         h.u64(e.last_t[i]);
     }
+    h.f32s(&eng.senses.bias);
+    for &n in &eng.senses.bias_seen {
+        h.u64(n);
+    }
     h.u64(eng.ring.total());
     for ev in eng.ring.iter() {
         h.u64(((ev.cell.idx as u64) << 32) | ev.cell.generation as u64);
