@@ -101,6 +101,9 @@ struct RunArgs {
     ring: usize,
     #[arg(long, default_value_t = 10_000)]
     metrics_every: u64,
+    /// Worker threads for the tick-synchronous parallel fire phase (results are bit-identical).
+    #[arg(long, default_value_t = 1)]
+    threads: usize,
     /// JSON file overriding any subset of rule constants (see docs/DESIGN.md).
     #[arg(long)]
     params: Option<PathBuf>,
@@ -142,6 +145,13 @@ impl RunArgs {
             self.corpus.display()
         );
         ensure!(self.metrics_every > 0, "--metrics-every must be > 0");
+        ensure!(self.threads >= 1, "--threads must be >= 1");
+        if self.threads > 1 {
+            // The global pool can only be built once per process; later calls are no-ops.
+            let _ = rayon::ThreadPoolBuilder::new()
+                .num_threads(self.threads)
+                .build_global();
+        }
         let p = match &self.params {
             Some(path) => {
                 let text = fs::read_to_string(path)
@@ -185,6 +195,7 @@ fn simulate(
     out: Option<Box<dyn Write>>,
 ) -> Result<Outcome> {
     let mut eng = seed::build(&s.cfg, s.p.clone());
+    eng.parallel = a.threads > 1;
     if extra_cells > 0 {
         seed::add_dormant(&mut eng, &s.cfg, extra_cells);
     }
@@ -273,9 +284,15 @@ fn main() -> Result<()> {
         }
         Cmd::CheckDeterminism { a } => {
             let s = a.setup()?;
+            // With --threads > 1 the first run is single-threaded: the check then also proves the
+            // parallel engine is bit-identical to the sequential one.
             let mut hashes = Vec::new();
             for run in 1..=2 {
-                let o = simulate(&a, &s, 0, None)?;
+                let single = RunArgs {
+                    threads: 1,
+                    ..a.clone()
+                };
+                let o = simulate(if run == 1 { &single } else { &a }, &s, 0, None)?;
                 let h = (o.obs.metrics_hash(), state_hash(&o.eng));
                 println!(
                     "run {run}: metrics {:016x}  state {:016x}  ({} events, {:.2}s)",

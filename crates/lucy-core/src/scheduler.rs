@@ -245,6 +245,19 @@ impl Scheduler {
         b.fired = 0;
     }
 
+    /// The remaining fires of tick `t` (the tick being processed), in cell order; consumes them.
+    pub fn take_fires(&mut self, t: u64) -> Vec<(u32, u32)> {
+        assert_eq!(t, self.now, "take_fires outside the current tick");
+        let b = &mut self.buckets[t as usize % WHEEL];
+        if b.fired == 0 {
+            b.fire.sort_by_key(|f| f.0);
+        }
+        let rest = b.fire[b.fired..].to_vec();
+        b.fired = b.fire.len();
+        self.in_wheel -= rest.len();
+        rest
+    }
+
     pub fn peek_t(&self) -> Option<u64> {
         if self.in_wheel > 0 {
             (self.now..self.now + WHEEL as u64)

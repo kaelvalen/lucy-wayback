@@ -4,12 +4,25 @@
 use std::io;
 
 use crate::buffer::{FireEvent, Ring};
-use crate::num::{S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
+use crate::num::{M, S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
 use crate::observe::{Observatory, Stats};
 use crate::rules::{self, Params, Scalars};
 use crate::scheduler::{Payload, Scheduler};
 use crate::senses::{self, Senses};
 use crate::store::{Credit, EdgeId, Graph, Id, Kind, Wave};
+
+/// Below this many fires in a tick, phase A runs inline (thread hand-off would cost more).
+const PARALLEL_MIN_FIRES: usize = 8;
+
+/// Result of phase A of one hidden fire.
+struct FireOut {
+    c: usize,
+    q: M,
+    gains: Vec<(u32, S)>,
+    h: V,
+    tau: S,
+    e2: S,
+}
 
 pub struct Engine {
     pub p: Params,
@@ -18,6 +31,8 @@ pub struct Engine {
     pub ring: Ring,
     pub stats: Stats,
     pub(crate) sched: Scheduler,
+    /// Run phase A of each tick's fires on the rayon pool. Results are identical either way.
+    pub parallel: bool,
     /// Structural plasticity bookkeeping (when and from where to replay the ring).
     pub plasticity: crate::plasticity::Plasticity,
     /// Decay factor tables derived from `p` (rebuild if `p` changes).
@@ -33,6 +48,7 @@ impl Engine {
         Self {
             decay: rules::Decay::new(&p),
             plasticity: Default::default(),
+            parallel: false,
             p,
             g,
             senses,
@@ -91,13 +107,19 @@ impl Engine {
             Payload::Deliver { edge, m, wave } => {
                 self.deliver(ev.cell as usize, edge, &m, wave, ev.t)
             }
-            Payload::Fire { generation } => self.fire(
-                Id {
-                    idx: ev.cell,
-                    generation,
-                },
-                ev.t,
-            ),
+            Payload::Fire { generation } => {
+                // The whole Fire phase of this tick is one batch (tick-synchronous).
+                let mut batch = vec![(ev.cell, generation)];
+                batch.extend(self.sched.take_fires(ev.t));
+                self.stats.events += batch.len() as u64 - 1;
+                if self.parallel {
+                    self.fire_batch(&batch, ev.t);
+                } else {
+                    for &(idx, generation) in &batch {
+                        self.fire(Id { idx, generation }, ev.t);
+                    }
+                }
+            }
         }
         true
     }
@@ -150,6 +172,7 @@ impl Engine {
         }
     }
 
+    /// Sequential hidden fire (the reference path; `fire_batch` must match it bit for bit).
     fn fire(&mut self, id: Id, t: u64) {
         if !self.g.cells.slots.is_live(id) {
             return;
@@ -172,6 +195,85 @@ impl Engine {
         let wave = cells.wave[c];
         self.spike(c, t, wave);
         self.stats.on_hidden_fire(e2, wave);
+    }
+
+    /// Parallel path: fire every cell of one tick's Fire phase (cells in ascending order).
+    ///
+    /// Phase A computes each cell's fire from the state at the start of the phase: tension,
+    /// predictor update, new in-gains, new state. Nothing a fire writes is read by another fire
+    /// of the same tick (a cell writes its own state and its own in-edges' gains; out-edge
+    /// vitality is not read), so phase A runs in parallel when `parallel` is set. Phase B then
+    /// applies the results and spikes strictly in cell order, so every message reads out-edge
+    /// gains exactly as a sequential engine would: bit-identical for any thread count.
+    fn fire_batch(&mut self, batch: &[(u32, u32)], t: u64) {
+        let live: Vec<usize> = batch
+            .iter()
+            .filter(|&&(idx, generation)| self.g.cells.slots.is_live(Id { idx, generation }))
+            .map(|&(idx, _)| idx as usize)
+            .collect();
+        for &c in &live {
+            self.touch(c, t); // a no-op: the delivery that scheduled the fire touched it at t
+        }
+        let outs: Vec<FireOut> = if self.parallel && live.len() >= PARALLEL_MIN_FIRES {
+            use rayon::prelude::*;
+            live.par_iter().map(|&c| self.fire_compute(c)).collect()
+        } else {
+            live.iter().map(|&c| self.fire_compute(c)).collect()
+        };
+        for o in outs {
+            let c = o.c;
+            let Graph { cells, edges } = &mut self.g;
+            cells.fire_pending[c] = false;
+            cells.q[c] = o.q;
+            for &(e, g) in &o.gains {
+                edges.gain[e as usize] = g;
+            }
+            cells.h_prev[c] = cells.h[c];
+            cells.h[c] = o.h;
+            cells.tau[c] = o.tau;
+            let wave = cells.wave[c];
+            self.spike(c, t, wave);
+            self.stats.on_hidden_fire(o.e2, wave);
+        }
+    }
+
+    /// Phase A of one hidden fire: pure function of the state at the start of the Fire phase.
+    fn fire_compute(&self, c: usize) -> FireOut {
+        let (cells, edges, p) = (&self.g.cells, &self.g.edges, &self.p);
+        // Predict this cycle's input from the state the last fire produced (h, before updating it).
+        let e = rules::prediction_error(&cells.u[c], &cells.q[c], &cells.h[c]);
+        let mut q = cells.q[c];
+        rules::nlms(&mut q, &e, &cells.h[c], p);
+        // Hidden credit: inputs move toward the prediction (toward = -e), then synaptic scaling;
+        // same operations, in the same order, as `learn_in_gains`.
+        let mut gains = Vec::new();
+        if !cells.credit[c].is_empty() {
+            let toward = neg(&e);
+            let ins = &cells.ins[c];
+            let mut local: Vec<S> = ins.iter().map(|&i| edges.gain[i as usize]).collect();
+            for cr in &cells.credit[c] {
+                if edges.slots.is_live(cr.edge) {
+                    let k = ins
+                        .iter()
+                        .position(|&i| i == cr.edge.idx)
+                        .expect("live in-edge");
+                    local[k] += rules::credit_step(&toward, &cr.m, p.eta_g);
+                }
+            }
+            let n2: S = local.iter().map(|g| g.powi(2)).sum();
+            let k = rules::scale_factor(n2, cells.gain_norm0[c]);
+            gains.extend(ins.iter().zip(&local).map(|(&i, &g)| (i, g * k)));
+        }
+        let h = rules::activate(&cells.w[c], &cells.h[c], &cells.u[c]);
+        let e2 = norm2(&e);
+        FireOut {
+            c,
+            q,
+            gains,
+            h,
+            tau: rules::ema(cells.tau[c], e2, p.alpha_tau),
+            e2,
+        }
     }
 
     /// Credit every in-edge that contributed this cycle, then synaptic scaling (fix 4). O(in-degree).
@@ -538,6 +640,24 @@ mod tests {
         let mut obs = Observatory::new(&eng, every, seed, None);
         eng.run(&mut text.iter().copied(), 6000, &mut obs).unwrap();
         (state_hash(&eng), obs.metrics_hash())
+    }
+
+    /// Tick-synchronous parallel fire phase: same state, bit for bit, as the sequential one.
+    #[test]
+    fn parallel_fire_phase_is_bit_identical() {
+        let run = |parallel: bool| {
+            let cfg = SeedConfig {
+                hidden: 3000,
+                ..SeedConfig::default()
+            };
+            let mut eng = seed::build(&cfg, Params::default());
+            eng.parallel = parallel;
+            let text = b"where's the doggie ? there's the doggie . ".repeat(30);
+            let mut obs = Observatory::new(&eng, 1000, 0, None);
+            eng.run(&mut text.iter().copied(), 6000, &mut obs).unwrap();
+            (state_hash(&eng), obs.metrics_hash(), eng.stats.events)
+        };
+        assert_eq!(run(false), run(true));
     }
 
     #[test]
