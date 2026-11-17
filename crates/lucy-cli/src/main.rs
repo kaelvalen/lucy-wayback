@@ -15,6 +15,8 @@ use lucy_core::rules::Params;
 use lucy_core::seed::{self, SeedConfig};
 use serde_json::json;
 
+mod sweep;
+
 #[derive(Parser)]
 #[command(
     name = "lucy",
@@ -48,6 +50,22 @@ enum Cmd {
         #[command(flatten)]
         a: RunArgs,
         #[arg(long, default_value = "runs/snapshot.jsonl")]
+        out: PathBuf,
+    },
+    /// Run seeds x parameter grids as parallel `lucy run` processes and print a summary table.
+    /// Shares all run flags (corpus, ticks, graph size, base --params); --seed is ignored.
+    Sweep {
+        #[command(flatten)]
+        a: RunArgs,
+        #[arg(long, value_delimiter = ',', default_value = "0")]
+        seeds: Vec<u64>,
+        /// Parameter axis `name=v1,v2,...` (repeatable; the grid is their product).
+        #[arg(long = "param")]
+        axes: Vec<String>,
+        /// Concurrent runs (default: available cores).
+        #[arg(long)]
+        jobs: Option<usize>,
+        #[arg(long, default_value = "runs/sweep")]
         out: PathBuf,
     },
     /// Same activity, more total cells: cost must stay ~constant.
@@ -95,6 +113,25 @@ struct Setup {
 }
 
 impl RunArgs {
+    /// The flags a child `lucy run` needs to reproduce this configuration (minus seed/params).
+    fn forwarded(&self) -> Vec<String> {
+        let mut v = vec!["--corpus".to_string(), self.corpus.display().to_string()];
+        for (flag, val) in [
+            ("--ticks", self.ticks.to_string()),
+            ("--cells", self.cells.to_string()),
+            ("--fanout", self.fanout.to_string()),
+            ("--input-fanout", self.input_fanout.to_string()),
+            ("--predict-fanin", self.predict_fanin.to_string()),
+            ("--ticks-per-byte", self.ticks_per_byte.to_string()),
+            ("--ring", self.ring.to_string()),
+            ("--metrics-every", self.metrics_every.to_string()),
+        ] {
+            v.push(flag.to_string());
+            v.push(val);
+        }
+        v
+    }
+
     fn setup(&self) -> Result<Setup> {
         // shortcut: whole-file read (fine up to ~1 GB); switch to BufReader streaming for larger corpora.
         let corpus = fs::read(&self.corpus)
@@ -257,6 +294,26 @@ fn main() -> Result<()> {
             summary(&o);
             write_snapshot(&o.eng, &mut create(&out)?)?;
             println!("snapshot -> {}", out.display());
+        }
+        Cmd::Sweep {
+            a,
+            seeds,
+            axes,
+            jobs,
+            out,
+        } => {
+            a.setup()?; // validate the shared configuration once, before spawning anything
+            let jobs =
+                jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+            sweep::Sweep {
+                run_args: a.forwarded(),
+                seeds: &seeds,
+                axes: &axes,
+                base_params: a.params.as_deref(),
+                jobs,
+                out: &out,
+            }
+            .run()?;
         }
         Cmd::BenchScaling { a, multipliers } => {
             let s = a.setup()?;
