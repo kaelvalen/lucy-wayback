@@ -253,26 +253,100 @@ Mean of the last 10 report windows (100 k ticks each).
   hidden prediction quality does not reach the readout (see finding 2).
 - Throughput with four runs in parallel: 1.5–1.8 M events/s per run.
 
+### Diagnosis: is context in the reservoir? (linear probe)
+
+`examples/probe_dump.rs` records, for each byte of CHILDES bytes 300 k–500 k (seed 7), the hidden
+cells that fired in the K ticks before it; `scripts/probe.py` (numpy, softmax regression, plain
+SGD) trains on the first 80 % and tests on the last 20 %. Count baselines are fitted on the same
+split. Dumps at HEAD and at `3c3db0a` are byte-identical (no dynamics change since).
+
+| Predictor | Top-1 | Bits |
+|---|---|---|
+| unigram / bigram / trigram (counts, back-off) | 20.9 % / 41.1 % / 57.0 % | 4.68 / 2.80 / 2.31 |
+| control probe: one-hot previous byte | 41.0 % | 2.77 |
+| reservoir probe at `3c3db0a` (= HEAD) | **44.5 %** | 2.79 |
+| reservoir probe at `phase1-baseline` | 44.5 % | 2.79 |
+
+The control matching the bigram validates the probe. The reservoir's recent firing linearly
+encodes more than bigram context, but Lucy's readout reached only 22 %: **routing, not
+representation, was the bottleneck.** This motivated structural plasticity.
+
+### Structural plasticity (`e05d23f`), CHILDES 500 k bytes, seed 7, last 10 windows
+
+| | Accuracy | True cell hot | Hot inputs/byte | Lift vs random | Input in-degree |
+|---|---|---|---|---|---|
+| `consolidate_every = 0` | 22.1 % | 38.5 % | 97.7 | 1.01× | 16.0 |
+| `consolidate_every = 1000` | **33.7 %** | **69.0 %** | 15.3 | **11.5×** | 5.9 |
+
+With log-domain calibration (`3d54c54`) surprise is 3.83 bits (unigram 4.68, online KT bigram 2.76,
+trigram 2.12). Accuracy reaches ≈ 32 % within 12.5 k bytes and plateaus; in-degree settles at ≈ 6,
+far under the cap, so the vitality floor and growth rate (not the cap) limit it. Not tuned yet.
+
+## Performance
+
+Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
+heap scheduler 24 % (moving 168-byte events), `dot` 19 % (SSE, 32 separate horizontal sums per
+matvec), `expf` 6 % (≈ 5 per touch), `tanhf` 6 % (inherent), memcpy 10 %. Each step below kept the
+state hash identical; single-thread events/s on CHILDES 200 k, 400 k ticks:
+
+| Commit | Change | events/s |
+|---|---|---|
+| (before) | BinaryHeap, 168-byte events | 2.07 M |
+| `1885484` | time-wheel buckets + per-tick state arena (messages ≈ 40 B) | 2.37 M |
+| `76d7712` | decay factors from bit-identical tables, one exp each | 2.52 M |
+| `c143d31` | `target-cpu=x86-64-v3` (AVX2; no FMA contraction, fixed sums) | 2.55 M |
+| `7d5c6cb` | sort 8-byte delivery keys instead of messages | 2.66 M |
+| `8e33bcb` | Fire phase as one batch per tick (+ opt-in parallel path) | 3.0 M |
+
+After that (with plasticity on), per-phase instruction share: Fire 42 %, Deliver 25 %, Arrive
+(input readout) 19 %, scheduler 8 %, consolidation 4 %. Instruction count fell 42 % but wall time
+only ≈ 30 %: what remains is mostly memory traffic.
+
+**Multi-core (`8e33bcb`).** Tick-synchronous: a tick's fires are computed in parallel (phase A,
+pure, from the state at the start of the phase), then applied and spiked in cell order (phase B),
+so messages read out-edge gains exactly as the sequential path. Opt-in (`--threads N`); the fused
+sequential `fire()` stays the reference and a test plus `check-determinism --threads N`
+(1 thread vs N) assert bit-identity. Gains are small because each tick has little work and a
+barrier: 4 096 cells (≈ 20 fires/tick) 2.88 M → 2.85 M events/s at 8 threads (none); 32 768 cells
+(≈ 164 fires/tick) 1.88 M → 2.07 M (+10 %). Amdahl ceiling with only the Fire phase parallel is
+≈ 1.6×; the next steps would be parallel delivery by destination cell (deliveries to different
+cells are independent) and a persistent spin-barrier pool instead of rayon fork-join per tick.
+
+**Runs in parallel.** `lucy sweep` runs seeds × parameter grids as separate processes; this is
+near-linear in cores and is the right tool for experiments.
+
+**Womb corpus estimate.** ≈ 220 events per tick at 4 096 cells → ≈ 13.6 k ticks/s single-thread.
+68 MB × K = 8 → 544 M ticks ≈ 11 h. K is a lever too: the measured hop depth is ≈ 5.4 of 8 ticks.
+
+### GPU (proposal only, not built)
+
+A single Lucy does not fit a GPU: ticks are sequential, a tick has ≈ 220 tiny irregular events,
+and 3 kernel launches per tick (≈ 5–10 µs each) alone cap it near today's CPU tick rate. The case
+where a GPU wins is **many independent Lucys in lockstep** (sweeps): batch B instances so each
+tick processes B × ≈ 20 fires (each ≈ 3 D×D matvecs + 32 tanh) and B × ≈ 200 scattered messages per
+launch. Memory bounds B: per instance ≈ 4 352 cells × (W + Q) × 4 KB ≈ 36 MB fp32, so ≈ 200 instances
+fit the RTX 5060's 8 GB. At ≈ 30 µs per batched tick that is ≈ 6.6 M instance-ticks/s, against
+≈ 16 cores × 13.6 k ≈ 220 k instance-ticks/s for `lucy sweep`: an estimated **≈ 20–30×** for sweeps,
+none for a single gestation. Caveat: equivalence against the reference engine cannot be bit-exact
+while the CPU uses glibc `expf`/`tanhf` and the GPU its own intrinsics. Bit-exactness would need
+both to use one portable implementation of exp/tanh in the rules module (a one-time change of
+reference results); otherwise the equivalence test must be statistical.
+
 ## Open findings
 
 1. **W is never updated: hidden cells are a fixed random reservoir.** This violates the "nothing
    frozen" principle and is the main target of Phase 2 (W learns from the one-hop feedback during
    reverse replay). No change in Phase 1.
-2. **The readout barely beats unigram top-1 because input-cell hotness carries no information.**
-   Measured on the first 200 k CHILDES bytes (`hot_inputs_per_byte`, `truth_hot_fraction`):
-   ≈ 101 of 256 input cells are hot before each byte, and the true byte's cell is hot 37.5 % of
-   the time, against 39.5 % for a random cell. Which input cells hear anything is set by the fixed random
-   hidden→input wiring and the reservoir's own dynamics, not by what comes next. So the
-   per-cell Q readout only exploits what little context its predecessors' vectors carry, and the
-   prior does most of the work. Learning can reweight in-gains but cannot change *which* cells
-   are reached. That requires W learning or new edges (Phase 2).
-3. **Calibrated surprise (6.7 bits) is still worse than unigram entropy (4.68 bits).** The
-   readout scores are linear-probability estimates (LMS toward 1/0), and `softmax(score / tau)`
-   exponentiates them: with tau ≈ 0.05 the most and least likely bytes differ by at most
-   e^(0.21/0.05) ≈ 70×, while true unigram ratios run to thousands. One scalar temperature cannot
-   fix the shape. A candidate (still observatory-only, still one scalar) is to calibrate on
-   `log(max(score, floor))`. Not changed yet; accuracy is the primary metric.
-4. **Watch items (not fixed).** Theta (reservoir mean of `theta_eff`) falls from 0.42 to 0.041
-   by ≈ 300 k bytes and sits at ≈ 0.06 at the end, including after the three fixes. The rate stays
-   at target, so fast adaptation now does most of the gating. Reverb fraction climbs to ≈ 35 % and
-   plateaus, below the 60 % alarm.
+2. **Routing (resolved in part by plasticity).** Without plasticity, input-cell hotness carried no
+   information (true cell hot 37.5 % vs 39.5 % for a random cell, first 200 k bytes). Co-activation
+   growth lifts it to 69 % at 15 hot cells per byte, and accuracy to 33.7 %; the probe says 44.5 % is
+   linearly available from the same firing, and the trigram reaches 57 %.
+3. **Plasticity design choices to review.** Growth ranks by *excess* co-occurrence (not raw
+   count), and edges into input cells earn vitality from reality instead of from use; both are
+   explained in the plasticity section. The accuracy plateau (≈ 33 %, in-degree ≈ 6) is untuned.
+4. **Surprise calibration (resolved).** Linear `softmax(score / tau)` was capped at ≈ 6.7 bits;
+   log-domain calibration gives 3.83 bits (< unigram 4.68).
+5. **Watch items (not fixed).** Theta (reservoir mean of `theta_eff`) falls from 0.42 to 0.041 by
+   ≈ 300 k bytes and sits at ≈ 0.06 to 0.07 afterwards, also with plasticity. The rate stays at
+   target, so fast adaptation does most of the gating. Reverb fraction plateaus at ≈ 32–35 %,
+   below the 60 % alarm.
