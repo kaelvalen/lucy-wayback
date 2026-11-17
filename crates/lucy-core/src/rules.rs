@@ -238,7 +238,11 @@ pub fn bias_step(prior: S, truth: bool, score: S, p: &Params) -> S {
 /// `bias *= 1 - eta_bias`: applied lazily in closed form, keeping learning O(hot).
 #[inline]
 pub fn bias_idle(bias: S, bytes: u64, p: &Params) -> S {
-    if bytes == 0 { bias } else { bias * (1.0 - p.eta_bias).powf(bytes as S) }
+    if bytes == 0 {
+        bias
+    } else {
+        bias * (1.0 - p.eta_bias).powf(bytes as S)
+    }
 }
 
 #[inline]
@@ -397,7 +401,11 @@ mod tests {
         let (pred, s) = readout(&q, &u, &code, 0.25);
         assert_eq!(pred, basis(1));
         assert!(close(s, 0.25 + 1.0 / 32.0, 1e-7));
-        assert!(close(bias_step(0.2, true, 0.6, &p), 0.2 + 0.005 * 0.4, 1e-7));
+        assert!(close(
+            bias_step(0.2, true, 0.6, &p),
+            0.2 + 0.005 * 0.4,
+            1e-7
+        ));
         // Lazy idle decay == k explicit cold updates (score = prior, target 0).
         let mut b = 0.3;
         for _ in 0..7 {
@@ -410,7 +418,10 @@ mod tests {
     /// A stream of i.i.d. bytes: priors converge to byte frequencies (frequency is learnable).
     #[test]
     fn priors_learn_frequencies() {
-        let p = Params { eta_bias: 0.01, ..Params::default() };
+        let p = Params {
+            eta_bias: 0.01,
+            ..Params::default()
+        };
         let (mut a, mut b) = (0.0, 0.0);
         for i in 0..5000 {
             let is_a = i % 4 != 0; // a: 75 %, b: 25 %

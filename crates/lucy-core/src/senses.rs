@@ -80,21 +80,6 @@ pub fn guess(scores: &[S]) -> u32 {
     best as u32
 }
 
-/// `-log2 softmax(score / sigma_score)[truth]`. Scale-free, but miscalibrated (see DESIGN.md).
-pub fn surprise_bits(scores: &[S], truth: u32) -> f64 {
-    let n = scores.len() as f64;
-    let mean = scores.iter().map(|&x| x as f64).sum::<f64>() / n;
-    let var = scores.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
-    if var == 0.0 {
-        return n.log2();
-    }
-    let sigma = var.sqrt();
-    let logits: Vec<f64> = scores.iter().map(|&x| x as f64 / sigma).collect();
-    let mx = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let z: f64 = logits.iter().map(|l| (l - mx).exp()).sum();
-    (mx + z.ln() - logits[truth as usize]) / std::f64::consts::LN_2
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,16 +107,6 @@ mod tests {
     fn guess_picks_highest_lowest_on_tie() {
         assert_eq!(guess(&[0.0; 4]), 0);
         assert_eq!(guess(&[0.1, 0.5, 0.5, -1.0]), 1);
-    }
-
-    #[test]
-    fn surprise_hand_cases() {
-        let mut s = vec![0.0; 256];
-        assert_eq!(surprise_bits(&s, 65), 8.0);
-        s[65] = 3.0; // only the truth stands out: logit gap 256/sqrt(255) ~ 16.03
-        let x = surprise_bits(&s, 65);
-        assert!(x > 0.0 && x < 1e-4, "{x}");
-        assert!(surprise_bits(&s, 66) > 8.0);
     }
 
     #[test]

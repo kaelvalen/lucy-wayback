@@ -18,6 +18,63 @@ use crate::store::{Kind, Wave};
 
 pub const RESERVOIR: usize = 1024;
 
+/// Online fit of the softmax inverse temperature `beta = 1 / tau` that turns readout scores into
+/// a calibrated next-byte distribution. Observatory only: the dynamics never read it.
+///
+/// Each byte is scored with the current beta first (prequential, so the reported surprise is
+/// honest), then beta takes a damped stochastic Newton step on the log-loss:
+/// `dL/dbeta = E_p[s] - s_true`, `d2L/dbeta2 = Var_p[s]` (running mean).
+#[derive(Debug, Clone)]
+pub struct Calibrator {
+    pub beta: f64,
+    curvature: f64,
+}
+
+/// Step and averaging rate of the calibrator: ~100 bytes of memory.
+const CALIBRATION_RATE: f64 = 0.01;
+
+impl Default for Calibrator {
+    fn default() -> Self {
+        Self {
+            beta: 1.0,
+            curvature: 0.0,
+        }
+    }
+}
+
+impl Calibrator {
+    /// Surprise in bits of `truth` under `softmax(beta * scores)`, then update beta.
+    pub fn observe(&mut self, scores: &[S], truth: usize) -> f64 {
+        let logits: Vec<f64> = scores.iter().map(|&s| self.beta * s as f64).collect();
+        let mx = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let w: Vec<f64> = logits.iter().map(|l| (l - mx).exp()).collect();
+        let z: f64 = w.iter().sum();
+        let surprise = (mx + z.ln() - logits[truth]) / std::f64::consts::LN_2;
+        let mean: f64 = w
+            .iter()
+            .zip(scores)
+            .map(|(w, &s)| w * s as f64)
+            .sum::<f64>()
+            / z;
+        let var: f64 = w
+            .iter()
+            .zip(scores)
+            .map(|(w, &s)| w * (s as f64 - mean).powi(2))
+            .sum::<f64>()
+            / z;
+        if var > 0.0 {
+            self.curvature = if self.curvature == 0.0 {
+                var
+            } else {
+                self.curvature + CALIBRATION_RATE * (var - self.curvature)
+            };
+            let grad = mean - scores[truth] as f64;
+            self.beta = (self.beta - CALIBRATION_RATE * grad / self.curvature).max(0.0);
+        }
+        surprise
+    }
+}
+
 /// Counters the kernel bumps as it runs. Window fields reset at each report.
 #[derive(Debug, Default, Clone)]
 pub struct Stats {
@@ -29,6 +86,7 @@ pub struct Stats {
     pub bytes: u64,
     pub correct: u64,
     pub surprise_sum: f64,
+    pub calibrator: Calibrator,
     pub depth_sum: u64,
     pub depth_windows: u64,
     /// Hidden fires whose freshest ancestry is an older byte (or none): reverberation.
@@ -71,8 +129,10 @@ impl Stats {
         }
     }
 
-    /// A byte arrived: close the previous inter-byte window (hop depth) and score the guess.
-    pub fn on_byte(&mut self, correct: bool, surprise: f64) {
+    /// A byte arrived: close the previous inter-byte window (hop depth), score the guess, and
+    /// measure calibrated surprise from the 256 readout scores.
+    pub fn on_byte(&mut self, correct: bool, scores: &[S], truth: usize) {
+        let surprise = self.calibrator.observe(scores, truth);
         if self.bytes_total > 0 {
             self.depth_sum += self.byte_depth as u64;
             self.depth_windows += 1;
@@ -166,8 +226,10 @@ pub struct Metrics {
     pub hidden_fires_in_window: u64,
     /// Next-byte guess accuracy over bytes in the window.
     pub accuracy: Option<f64>,
-    /// Mean -log2 softmax(heat/sigma)[true byte] over bytes in the window.
+    /// Mean -log2 softmax(score / tau)[true byte] over bytes in the window, tau fitted online.
     pub surprise_bits: Option<f64>,
+    /// Calibrated softmax temperature at the end of the window.
+    pub surprise_temperature: Option<f64>,
     /// Mean |e|^2 of hidden fires in the window.
     pub tension: Option<f64>,
     /// Mean, over inter-byte windows, of the furthest hop the current byte's wave reached
@@ -312,6 +374,7 @@ impl Observatory {
             hidden_fires_in_window: s.hidden_fires,
             accuracy: ratio(s.correct as f64, s.bytes),
             surprise_bits: ratio(s.surprise_sum, s.bytes),
+            surprise_temperature: (s.calibrator.beta > 0.0).then(|| 1.0 / s.calibrator.beta),
             tension: ratio(s.e2_sum, s.hidden_fires),
             hop_depth: ratio(s.depth_sum as f64, s.depth_windows),
             reverb_fraction: ratio(s.reverb_fires as f64, s.hidden_fires),
@@ -482,6 +545,27 @@ mod tests {
     }
 
     #[test]
+    fn calibrator_uniform_and_fit() {
+        let mut c = Calibrator::default();
+        assert_eq!(c.observe(&[0.0; 256], 7), 8.0);
+        // 4 classes; the readout marks one with score 1. It is right half the time, otherwise the
+        // truth is one of the other 3. Log-loss optimum: e^beta / (e^beta + 3) = 1/2 -> beta = ln 3.
+        let mut c = Calibrator::default();
+        for i in 0..40_000usize {
+            let marked = i % 4;
+            let truth = if i % 2 == 0 {
+                marked
+            } else {
+                (marked + 1 + (i / 2) % 3) % 4
+            };
+            let mut s = [0.0; 4];
+            s[marked] = 1.0;
+            c.observe(&s, truth);
+        }
+        assert!((c.beta - 3f64.ln()).abs() < 0.1, "{}", c.beta);
+    }
+
+    #[test]
     fn dist_percentiles() {
         let mut xs: Vec<f64> = (1..=101).rev().map(f64::from).collect();
         let d = dist(&mut xs).unwrap();
@@ -496,7 +580,7 @@ mod tests {
         s.on_fire(3, 1);
         s.on_fire(4, 2);
         assert_eq!((s.fired.clone(), s.max_tick_fires), (vec![3, 4], 2));
-        s.on_byte(false, 8.0);
+        s.on_byte(false, &[0.0; 4], 0);
         s.on_hidden_fire(
             1.0,
             Wave {
@@ -511,7 +595,7 @@ mod tests {
                 depth: 9,
             },
         ); // no ancestry: reverberation
-        s.on_byte(true, 1.0);
+        s.on_byte(true, &[0.0; 4], 0);
         assert_eq!(
             (s.depth_sum, s.depth_windows, s.correct, s.reverb_fires),
             (3, 1, 1, 1)

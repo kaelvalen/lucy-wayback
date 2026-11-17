@@ -147,7 +147,13 @@ Every M ticks (`--metrics-every`), one JSON line. The first line is a header wit
 **unigram entropy** (surprise baseline), **unigram top-1 accuracy** (accuracy baseline), seed
 config and params. Metrics:
 
-- `surprise_bits`, `accuracy`: per byte in the window.
+- `accuracy` (primary): next-byte guess accuracy per byte in the window.
+- `surprise_bits`: `-log2 softmax(score / tau)[true byte]`, where `tau` is fitted online **in the
+  observatory only** (`observe::Calibrator`): each byte is scored with the current `beta = 1/tau`
+  first (prequential), then `beta` takes a damped stochastic Newton step on the log-loss
+  (`grad = E_p[s] - s_true`, curvature = running `Var_p[s]`, rate 0.01 ≈ 100 bytes of memory).
+  The dynamics never read it, so changing the calibrator cannot change the state hash.
+  `surprise_temperature` reports `tau`.
 - `tension`: mean |e|² of hidden fires in the window.
 - `hop_depth`: for each inter-byte window, the furthest shortest-path hop the *current* byte's
   wave reached before the next byte, averaged over windows. If it approaches K, K is too small.

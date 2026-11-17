@@ -252,8 +252,7 @@ impl Engine {
             })
             .collect();
         let guess = senses::guess(&scores);
-        let surprise = senses::surprise_bits(&scores, b as u32);
-        self.stats.on_byte(guess == b as u32, surprise);
+        self.stats.on_byte(guess == b as u32, &scores, b);
 
         // Reality teaches every touched cell: pred -> code_b (true byte) or 0 (hot wrong byte).
         // Cold wrong cells need no work: Q u = 0 already, their prior decays lazily.
@@ -368,12 +367,19 @@ mod tests {
 
         // Byte A: every score is 0 -> guess byte 0 (wrong), 8 bits. A learns: prior 0 -> 0.005.
         // Byte B: scores = priors (A 0.005, rest 0; Q_B = 0 so B's trace adds nothing yet)
-        // -> guess A (wrong). sigma-softmax puts logit 256/sqrt(255) on A: 23.128 bits.
+        // -> guess A (wrong). Calibrated surprise with the initial beta = 1:
+        // log2(255 + e^0.005) = 8.0000282 bits (byte A: all scores equal -> 8 bits).
         assert_eq!((eng.stats.bytes_total, eng.stats.correct), (2, 0));
         let s_b = eng.stats.surprise_sum - 8.0;
-        assert!((s_b - 23.1284).abs() < 1e-3, "{s_b}");
-        let (pa, pb) = (eng.senses.prior(A as usize, 2, &eng.p), eng.senses.prior(B as usize, 2, &eng.p));
-        assert!((pa - 0.005 * 0.995).abs() < 1e-9 && (pb - 0.005).abs() < 1e-9, "{pa} {pb}");
+        assert!((s_b - 8.0000282).abs() < 1e-6, "{s_b}");
+        let (pa, pb) = (
+            eng.senses.prior(A as usize, 2, &eng.p),
+            eng.senses.prior(B as usize, 2, &eng.p),
+        );
+        assert!(
+            (pa - 0.005 * 0.995).abs() < 1e-9 && (pb - 0.005).abs() < 1e-9,
+            "{pa} {pb}"
+        );
         // B's readout error: pred = 0, e = code_B = e1 -> tau = 0.05. NLMS on u_B =
         // tanh(0.5) e^(-6/4) e0 = 0.103114 e0: Q_B[1][0] = 0.1 / (1e-3 + 0.0106325) * 0.103114.
         assert!((eng.g.cells.tau[B as usize] - 0.05).abs() < 1e-7);
@@ -398,7 +404,11 @@ mod tests {
     /// Deterministic bigram A -> B: the readout must learn to call both bytes.
     #[test]
     fn readout_learns_a_bigram() {
-        let p = Params { target_rate: 0.1, adapt_step: 0.0, ..Params::default() };
+        let p = Params {
+            target_rate: 0.1,
+            adapt_step: 0.0,
+            ..Params::default()
+        };
         let (mut eng, _) = tiny_with(p);
         let text = b"AB".repeat(500);
         let mut src = text.iter().copied();
