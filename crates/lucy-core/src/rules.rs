@@ -50,6 +50,15 @@ pub struct Params {
     pub prune_vitality: S,
     /// In-degree cap of input cells; over it, the lowest-vitality edge dies.
     pub input_in_cap: u32,
+    /// Hidden -> hidden growth: new A -> B edges per consolidation pass (0 = off), for pairs where
+    /// B fires 1..=hidden_grow_lag ticks after A more often than chance.
+    pub hidden_grow_per_pass: u32,
+    pub hidden_grow_lag: u32,
+    /// Each pass considers targets B with B % stride == pass % stride (cost / stride; every
+    /// cell is a candidate target once per `stride` passes).
+    pub hidden_grow_stride: u32,
+    /// Cap on a hidden cell's hidden -> hidden in-degree (edges from input cells never compete).
+    pub hidden_in_cap: u32,
 }
 
 impl Default for Params {
@@ -75,6 +84,10 @@ impl Default for Params {
             grow_gain: 0.1,
             prune_vitality: 0.5,
             input_in_cap: 32,
+            hidden_grow_per_pass: 0,
+            hidden_grow_lag: 3,
+            hidden_grow_stride: 8,
+            hidden_in_cap: 16,
         }
     }
 }
@@ -127,6 +140,13 @@ impl Params {
             && self.prune_vitality >= 0.0)
         {
             return Err("grow_gain must be finite and prune_vitality finite and >= 0".into());
+        }
+        if self.hidden_grow_per_pass > 0
+            && (self.hidden_grow_lag == 0
+                || self.hidden_in_cap == 0
+                || self.hidden_grow_stride == 0)
+        {
+            return Err("hidden growth needs lag, in-cap and stride >= 1".into());
         }
         if self.consolidate_every > 0 && self.input_in_cap == 0 {
             return Err("input_in_cap must be >= 1 when consolidation is on".into());

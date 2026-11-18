@@ -179,6 +179,10 @@ pub struct Stats {
     pub edges_grown: u64,
     pub edges_pruned: u64,
     pub growth_budget: u64,
+    pub edges_grown_hidden: u64,
+    pub edges_pruned_hidden: u64,
+    /// Fires of the current byte's wave by hop depth (branching-ratio estimate).
+    pub depth_hist: [u64; 16],
     pub lost_events: u64,
     pub truth_hot: u64,
     pub max_tick_fires: u64,
@@ -219,6 +223,8 @@ impl Stats {
         self.edges_grown += r.grown;
         self.edges_pruned += r.pruned;
         self.growth_budget += r.budget;
+        self.edges_grown_hidden += r.grown_hidden;
+        self.edges_pruned_hidden += r.pruned_hidden;
         self.lost_events += r.lost_events;
     }
 
@@ -227,6 +233,7 @@ impl Stats {
         self.e2_sum += e2 as f64;
         if wave.origin == self.bytes_total && wave.origin > 0 {
             self.byte_depth = self.byte_depth.max(wave.depth);
+            self.depth_hist[(wave.depth as usize).min(15)] += 1;
         } else {
             self.reverb_fires += 1;
         }
@@ -264,6 +271,9 @@ impl Stats {
         self.edges_grown = 0;
         self.edges_pruned = 0;
         self.growth_budget = 0;
+        self.edges_grown_hidden = 0;
+        self.edges_pruned_hidden = 0;
+        self.depth_hist = [0; 16];
         self.lost_events = 0;
         self.truth_hot = 0;
         self.max_tick_fires = 0;
@@ -361,6 +371,13 @@ pub struct Metrics {
     pub edges_pruned: u64,
     /// Edges input cells were allowed to grow (tension budget) in the window.
     pub growth_budget: u64,
+    /// Hidden -> hidden growth in the window, and mean hidden in-degree (reservoir sample).
+    pub edges_grown_hidden: u64,
+    pub edges_pruned_hidden: u64,
+    pub hidden_in_degree: Option<f64>,
+    /// Branching ratio of the current byte's wave: fires at hop d+1 per fire at hop d (d >= 1).
+    /// ~ the network's gain on a perturbation; >= 1 sustained = avalanche risk.
+    pub branching_ratio: Option<f64>,
     /// Input cells' prediction error EMA and its excess over the running floor (means over 256).
     pub input_error: f64,
     pub input_error_excess: f64,
@@ -550,6 +567,20 @@ impl Observatory {
             edges_grown: s.edges_grown,
             edges_pruned: s.edges_pruned,
             growth_budget: s.growth_budget,
+            edges_grown_hidden: s.edges_grown_hidden,
+            edges_pruned_hidden: s.edges_pruned_hidden,
+            hidden_in_degree: (!self.reservoir.is_empty()).then(|| {
+                self.reservoir
+                    .iter()
+                    .map(|&c| eng.g.cells.ins[c as usize].len())
+                    .sum::<usize>() as f64
+                    / self.reservoir.len() as f64
+            }),
+            branching_ratio: {
+                let h = &s.depth_hist;
+                let (num, den): (u64, u64) = (h[2..16].iter().sum(), h[1..15].iter().sum());
+                (den > 0).then(|| num as f64 / den as f64)
+            },
             input_error: eng.plasticity.err.iter().map(|&x| x as f64).sum::<f64>() / 256.0,
             input_error_excess: eng
                 .plasticity

@@ -148,6 +148,17 @@ and a new edge (vitality ≈ 1) would always lose to established ones (≈ 500);
 decayed co-occurrence count, the same statistic growth ranks by. Edges into hidden cells keep
 usage vitality. No dynamics read vitality, so with consolidation off accuracy is unchanged.
 
+**Hidden → hidden growth (B, off by default: `hidden_grow_per_pass = 0`).** The same replay
+counts sequential co-firing `N(A→B)`, i.e. B fired 1..=`hidden_grow_lag` (3) ticks after A. Chance
+is `f_A·f_B·lag/T` over the T replayed ticks. Each pass grows the `hidden_grow_per_pass`
+unconnected pairs (no self-loops) with the largest excess. Each new edge starts at gain
+`grow_gain` with vitality = N. Targets that got an edge then get the input-cell pruning rules:
+decayed vitality below `prune_vitality` dies, and over `hidden_in_cap` (16) the lowest vitality
+dies first. Hidden in-edges keep usage vitality, and edges from input cells never compete.
+Counting every pair costs ≈ 10 M hash increments per pass (≈ 10× slowdown), so each pass only
+considers targets with `B % hidden_grow_stride == pass % stride` (8). Every cell is a candidate
+target once per 8 passes, at ≈ 12 % overhead.
+
 Cost per pass ∝ fires since the last pass + the 256 input cells' in-edges. Ordered maps and index
 tie-breaks keep it deterministic (tested).
 
@@ -174,6 +185,10 @@ tie-breaks keep it deterministic (tested).
 | `grow_gain` | 0.1 | New edges start small; synaptic scaling then folds them into the cell's fixed gain budget. |
 | `prune_vitality` | 0.5 | An in-edge of an input cell must keep earning: a single co-occurrence decays below 0.5 after ≈ 69 k ticks (≈ 8.7 k bytes). |
 | `input_in_cap` | 32 | Homeostatic in-degree cap of input cells (2× the seed fan-in). Over it, the lowest-vitality edge dies. |
+| `hidden_grow_per_pass` | 0 (off) | Hidden→hidden edges per pass. 16/64/256 tested: stable, no probe gain at 200 k bytes. |
+| `hidden_grow_lag` | 3 ticks | "B fires at t+1..t+3 after A": one to three hops of delivery plus integration. |
+| `hidden_in_cap` | 16 | ≈ 2× the seed hidden fan-in (≈ 8). |
+| `hidden_grow_stride` | 8 | Cost knob: 1/8 of targets per pass. |
 | `eta_bias` | 0.005 | Prior LMS step: averages byte frequency over ~200 bytes, so frequent bytes are tracked within a few utterances while one-off bytes barely move it. |
 
 Seed constants (`SeedConfig`, CLI flags): 4096 hidden, fanout 8 (hidden→hidden, distinct, no
@@ -251,6 +266,92 @@ near-constant. A unit test also asserts that dormant cells are never touched (`l
 - Per-edge credit vectors (deeper credit assignment).
 - All state behind SoA columns and the `S` alias (cold-tier mmap, quantization).
 
+## Plan for review (not built): reverse replay ("wayback") with one-hop feedback into W
+
+Goal: make W learn (open finding 1) from reality, offline, without global passes, using only
+what one cell can see. It runs inside consolidation, after growth and pruning.
+
+**1. What is replayed.** Ring segments that *end in a high-tension event*. Anchors are byte
+arrivals whose input cell missed: the per-arrival miss `x_b = |code_b − pred_b|²/D` exceeds the
+cell's floor (A's growth-law state) by the largest margin. During each pass the kernel keeps the
+top `replay_per_pass` (≈ 32) anchors in a bounded heap: O(log R) per arrival. Each anchor also
+keeps its ring sequence number and the readout error vector `e_b`. A segment is the ring
+events in `[t_a − replay_bytes·K, t_a]` (≈ 4 bytes = 32 ticks ≈ 650 fires). The ring holds
+≈ 1500 bytes and passes run every 1000, so anchors from the last pass are still retained. Lost
+ones are skipped and counted.
+
+**2. Order.** Strictly reverse in time: anchor tick first, then t_a−1, t_a−2, … Within a tick,
+cells go by index, so the order is deterministic.
+
+**3. The one-hop feedback signal, exactly.** Each replayed fire event carries a *desired change
+of the state it produced*, `δ ∈ R^D`. It moves back exactly one hop per replay step and is
+computed only from the receiving cell's own quantities and the connecting edge's gain:
+- Seed (anchor, input cell b): the desired change of b's input is `Qᵀ_b e_b`, the `toward`
+  vector `arrive` already computes. For every in-edge h→b whose message was in b's trace window
+  (the cell's `credit` list at the anchor, or the ring: h fired in `[t_a − t_heat·2, t_a)`):
+  `δ_h += g_hb · Qᵀ_b e_b`.
+- Hidden hop: B fired at t with recorded state `h_B`, and A fired at t′ in
+  `[t − t_heat·2, t)` with edge A→B. The pre-activation of B moved by `clip(u_B)` with
+  `u_B ∋ g_AB · h_A`, so A's share of B's desired change is
+  `δ_A += γ · g_AB · ((1 − h_B²) ⊙ δ_B)`. Here `γ ≈ 0.5` is a per-hop decay, and the clip factor
+  counts as 1 when `u_B` was not clipped.
+- After a tick is processed, each accumulated `δ` is RMS-clipped to 1 (no explosion) and dropped
+  below `1e-3` RMS (the chain ends where the signal does). The chain never reaches further back
+  than the segment.
+
+This is backpropagation through time cut into local one-hop messages along the recorded
+trajectory. Every term is one cell's own state or one edge's gain. Nothing global is formed.
+
+**4. How W updates (local).** For a replayed fire of A with `δ_A`, its recorded previous state
+`h_A⁻` and new state `h_A`, use NLMS through tanh on A's own map:
+`ΔW_A = η_w · ((1 − h_A²) ⊙ δ_A) h_A⁻ᵀ / (ε + |h_A⁻|²)`, with `η_w ≈ 0.01` (≪ `eta_q` = 0.1, so
+Q can track the drift). `h_A⁻` is A's previous ring entry. `FireEvent` gains `prev_seq`, set from
+a per-cell `last_seq` column, so the lookup is O(1); if that entry was overwritten the update is
+skipped. Then comes a W norm homeostasis like synaptic scaling: `W_A ← W_A · min(1, ‖W_A⁰‖_F/‖W_A‖_F)`,
+using the birth norm. That keeps each cell's spectral contribution at most where it started. Ring
+states are i8 (`h·127`), which costs about 0.4 % quantization noise in the update. Optional, and
+not in the first slice: edge gains on the hop get `Δg_AB ∝ dot((1 − h_B²) ⊙ δ_B, h_A)/D`.
+
+**5. Protecting old sequences: interleaved dreaming.** Each pass interleaves real reverse replays
+with an equal number of *self-generated* ones:
+- Dream generation: pick k ≈ 8 random hidden cells from a dedicated `DREAM` ChaCha stream. Force
+  them with their current h, then run the network *forward* in a sandbox: a scratch scheduler and
+  ring, no sensory input, homeostasis and all learning frozen, the same rules module. It runs for
+  `replay_bytes·K` ticks, with fires per tick capped at the target budget. Each dream fire records
+  `(h⁻, u, h)` at full precision. The dream is produced *before* the real replays update W.
+- Dream consistency: after the real replays, the dreamed transitions are recomputed with the new
+  W, `ĥ = tanh(W h⁻ + clip(u))`. The same NLMS rule then pulls each one back toward its recorded
+  value, `δ = h − ĥ`, without chaining. This removes, on the network's own spontaneous
+  trajectories, exactly the interference the real update caused. It is pseudo-rehearsal: what
+  the network already does by itself is protected without storing old data.
+- Dream cost is bounded by `replay_per_pass × replay_bytes·K × target fires` per pass, i.e. it
+  scales with activity.
+
+**6. Stability risks and their guards.**
+1. W spectral growth → saturated or chaotic reservoir. Guard: Frobenius norm cap at the birth
+   norm. Watch: saturation fraction (|h| > 0.95), branching ratio, fires per tick.
+2. Vanishing or exploding δ along the reverse chain. Guard: per-hop γ, RMS clip, drop threshold,
+   segment-length limit. Watch: mean ‖δ‖ by hop.
+3. Moving target for Q (W shifts the distribution of h that Q reads). Guard: η_w ≪ eta_q.
+   Watch: tension and readout accuracy right after each pass (a sawtooth means η_w is too high).
+4. Interference with old sequences. Guard: dream consistency. Watch: the probe on a *fixed early
+   segment* re-run at checkpoints, and the readout on held-out early text.
+5. Off-policy replay: ring states were produced by an older W. Guard: replay only the last pass's
+   anchors; skip segments older than `t_v`.
+6. Homeostasis coupling: changing W changes firing rates, theta adapts, and theta is already low
+   (≈ 0.06). Watch theta per pass. Freeze homeostasis during dreams.
+7. Dreams that die or avalanche without input. Guard: seed count k, a fires-per-tick cap, a tick
+   cap. Watch: dream activity per pass.
+8. Credit only reaches cells that fired. Cells that *should* have fired get nothing (sparse by
+   design). The first slice accepts this.
+9. Determinism and cost: fixed budgets, ordered iteration, a dedicated RNG stream. Test:
+   `η_w = 0` leaves the state hash unchanged; a hand-computed two-hop δ; replay off/on
+   determinism.
+
+**Measure before/after (when built):** routing and tissue headlines; the probe ceiling is the
+direct test, since W shapes what the tissue holds. Also the early-segment probe (forgetting),
+saturation, branching, and theta.
+
 ## Results history
 
 All learning measurements use CHILDES child-directed speech (`corpus/childes-1mb.txt`,
@@ -310,8 +411,38 @@ representation, was the bottleneck.** This motivated structural plasticity.
 | `consolidate_every = 1000` | **33.7 %** | **69.0 %** | 15.3 | **11.5×** | 5.9 |
 
 With log-domain calibration (`3d54c54`) surprise is 3.83 bits (unigram 4.68, online KT bigram 2.76,
-trigram 2.12). Accuracy reaches ≈ 32 % within 12.5 k bytes and plateaus; in-degree settles at ≈ 6,
-far under the cap, so the vitality floor and growth rate (not the cap) limit it. Not tuned yet.
+trigram 2.12). Accuracy reaches ≈ 32 % within 12.5 k bytes and plateaus. (Corrected later: the
+mean in-degree ≈ 6 hides a bimodal split, see below; the cap *does* bind for frequent bytes.)
+
+### Growth law A (`61550d0`): tension-driven growth, CHILDES 1 MiB, seed 7
+
+Headlines: *routing* = Lucy readout top-1 and *tissue* = probe ceiling, both on the probe's
+test bytes at each 100 k checkpoint (probe = last 200 k windows).
+
+| | routing (mean of 8 checkpoints) | tissue | readout, windows 750–800 k | true cell hot | in-edges/input cell |
+|---|---|---|---|---|---|
+| fixed rate (`a9f823d`) | 32.6 % | 44.2–45.1 % | 33.4 % | 68.0 % | 5.9 |
+| tension law | 32.4 % | identical | 32.0 % | 65.0 % | 5.4 |
+
+- **Tissue is bit-for-bit unchanged.** Edges into input cells never reach the hidden dynamics
+  (input cells fire only when their byte arrives), so any input-side plasticity leaves the probe
+  ceiling where the fixed reservoir puts it: ≈ 44.7 %.
+- **Where the 12.5 k plateau comes from.** All 16 seed hidden→input edges per byte start with
+  vitality 1. Unless they earn, they decay below `prune_vitality` at ≈ 9–12 k bytes. After that,
+  growth and pruning balance (grown ≈ pruned in every window).
+- **In-degree is bimodal, not ≈ 6.** At 100 k bytes, 33 bytes sit at the cap (32) and churn. 29
+  *seen* bytes have zero in-edges, among them `?` with 984 occurrences. The other 187 byte values
+  never occur.
+- **The growth law works as a law, but does not lift accuracy.**
+  - Budgets go to stuck cells, and a cell with falling error gets 0.
+  - Sweeping `grow_per_tension` 0.01–64 × `alpha_floor` {0.001, 0.01} gives 30–35 % for every
+    setting at 200 k bytes. That spread is the window-to-window noise.
+  - Raising `input_in_cap` from 32 to 128 lifts true-cell-hot to 85 % (seeds 7 and 11), and
+    accuracy still does not move (30–34 %).
+- **Conclusion: the plateau is in the readout, not in growth or coverage.** The per-arrival
+  vector miss `|code − Q u|²/D` stays at ≈ 0.96, so `dot(Qu, code)/D` adds only a few hundredths
+  to priors that differ by tenths. The readout cannot use the context its in-edges deliver. The
+  probe gets 44.7 % from the same firing with a joint 256-way softmax over all cells.
 
 ## Performance
 
