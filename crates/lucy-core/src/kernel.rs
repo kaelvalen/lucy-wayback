@@ -24,6 +24,27 @@ struct FireOut {
     e2: S,
 }
 
+/// Ask the cache for a cell's W and Q (8 KB, read on its fire) as soon as the fire is scheduled:
+/// the rest of the tick's Deliver phase hides the DRAM latency. A hint only: no effect on state.
+#[inline]
+fn prefetch_matrices(cells: &crate::store::CellStore, c: usize) {
+    #[cfg(target_arch = "x86_64")]
+    for m in [&cells.w[c], &cells.q[c]] {
+        let base = m.as_ptr() as *const i8;
+        for off in (0..std::mem::size_of::<M>()).step_by(64) {
+            // SAFETY: prefetch never faults and has no architectural effect; the address is
+            // inside a live allocation anyway.
+            #[allow(unused_unsafe)]
+            unsafe {
+                std::arch::x86_64::_mm_prefetch(
+                    base.wrapping_add(off),
+                    std::arch::x86_64::_MM_HINT_T0,
+                )
+            };
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Engine {
     pub p: Params,
@@ -168,6 +189,7 @@ impl Engine {
                     cells.fire_pending[c] = true;
                     let generation = cells.slots.id(c as u32).generation;
                     self.sched.push_fire(t, c as u32, generation);
+                    prefetch_matrices(cells, c);
                 }
             }
         }

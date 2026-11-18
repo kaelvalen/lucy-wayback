@@ -617,6 +617,36 @@ near-linear in cores and is the right tool for experiments.
 **Womb corpus estimate.** ≈ 220 events per tick at 4 096 cells → ≈ 13.6 k ticks/s single-thread.
 68 MB × K = 8 → 544 M ticks ≈ 11 h. K is a lever too: the measured hop depth is ≈ 5.4 of 8 ticks.
 
+### Memory behaviour (perf, Ryzen 7 250: 8 cores / 16 threads, L2 1 MB/core, L3 16 MB shared)
+
+`perf stat`, 100 k bytes of CHILDES, 4096 cells, competitive readout (`7b9fc45`):
+
+| | IPC | L1D load miss | L1 misses hitting L2 | demand fills from L2 / L3 / DRAM | events/s |
+|---|---|---|---|---|---|
+| alone (other runs SIGSTOPped) | **0.99** | 6.8 % | 52 % | 47 % / 38 % / 15 % | 2.6 M |
+| 17 processes on the machine | **0.11** | 7.1 % | 38 % | 37 % / 8 % / 55 % | 0.3 M |
+
+- **Where the misses come from** (`perf record` on DRAM demand fills, alone): `num::dot` 39 %,
+  the W·h and Q·h products of a fire; `step` (fire, inlined) 17 %; `spike` 13 % (out-edge loop
+  over the edge SoA); `touch` 6 %; `learn_in_gains` 5 %; scheduler `pop` 4 %. L3 fills are led
+  by `touch` (25 %) and `learn_in_gains` (12 %): per-cell fields spread over ≈ 10 columns, plus
+  per-cell heap `credit` lists.
+- **The dominant traffic is intrinsic.** Every fire reads its own W and Q, 2 × 32 × 32 f32 =
+  8 KB. At 4096 cells that is 35 MB of matrices, more than the 16 MB L3. Renumbering cells for
+  neighbour locality cannot shrink it; it only helps the small per-cell and edge fields, which at
+  4096 cells already fit in L2 + L3.
+- **Software prefetch of W and Q** is issued when a fire is scheduled during Deliver, so the rest
+  of the Deliver phase hides the latency. Hash identical. Measured alone, interleaved ×2:
+  −1 to −3 % cycles, −14 to −16 % DRAM demand fills, IPC 0.95–1.00 → 0.99–1.02.
+- **Sweeps should run ≤ 8 jobs.** With 17 processes each run fell to 0.3 M events/s (IPC 0.11,
+  L3 useless): about 5 M events/s in aggregate, less than 8 jobs gave earlier (≈ 13 M). With
+  SMT and one shared L3, more jobs than physical cores lose throughput.
+- **Not done.** Renumbering (BFS order from the input cells, with a stable logical id for the
+  hash) and grouping hot per-cell scalars into one cache line together target the ≈ 30 % of
+  misses outside the matrices; I expect ≤ 10 % at 4096 cells, more at ≥ 32 k cells. Halving the
+  matrix traffic with f16/bf16 W and Q storage would change the dynamics (hash), so that needs
+  your decision.
+
 ### GPU (proposal only, not built)
 
 A single Lucy does not fit a GPU: ticks are sequential, a tick has ≈ 220 tiny irregular events,
