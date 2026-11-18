@@ -10,6 +10,11 @@
 //!    W of the fired cell takes a local NLMS step through tanh.
 //! 3. Dream consistency: each cell whose W changed is pulled back toward reproducing its
 //!    recorded pre-update dream transitions.
+//! 4. Readout consolidation: every replayed segment is re-run *forward* under the updated W,
+//!    with the recorded spike timing (who fired when, including the byte arrivals, which are
+//!    the input cells' forced fires in the ring) and recomputed states, no tissue learning.
+//!    At each recorded byte the competitive readout takes its usual step on the recomputed
+//!    input-cell traces against the true byte, so Q follows the states W now produces.
 //!
 //! Cost is bounded by `replay_per_pass` segments and `dreams_per_pass` dreams of
 //! `replay_bytes * K` ticks each: it scales with activity, never with total graph size.
@@ -69,6 +74,13 @@ pub struct ReplayReport {
     pub delta_rms_sum: f64,
     pub dream_fires: u64,
     pub dream_updates: u64,
+    /// Forward readout consolidation: bytes re-scored (and guessed right) under the new W.
+    pub readout_updates: u64,
+    pub readout_correct: u64,
+    /// Mean |recomputed - recorded| state over forward-replayed fires of cells whose W did not
+    /// change (a check of the forward re-run itself: quantization + window truncation only).
+    pub state_err_sum: f64,
+    pub state_err_n: u64,
 }
 
 /// One recorded dream transition (full precision).
@@ -139,7 +151,164 @@ pub fn wayback(eng: &mut Engine, t: u64) -> ReplayReport {
         rules::w_step(&mut cells.w[c], &g, &d.h_prev, cells.w_norm0[c], &p);
         rep.dream_updates += 1;
     }
+
+    // 4. Readout consolidation on the same segments, forward, under the updated W.
+    if p.replay_readout {
+        for a in &anchors {
+            readout_forward(eng, a, span, &touched, &mut rep);
+        }
+    }
     rep
+}
+
+/// Ring events (all kinds) in `[t_a - span, t_a]` up to and including the anchor's own byte
+/// arrival (`a.seq`), ascending; None if the segment is no longer whole in the ring.
+fn segment_with_arrival(eng: &Engine, a: &Anchor, span: u64) -> Option<Vec<FireEvent>> {
+    let lo = a.t.saturating_sub(span);
+    let total = eng.ring.total();
+    let oldest = total - eng.ring.len() as u64;
+    if a.seq < oldest || a.seq >= total {
+        return None;
+    }
+    let mut events = Vec::new();
+    let mut seq = a.seq + 1;
+    let mut complete = oldest == 0;
+    while seq > oldest {
+        seq -= 1;
+        let ev = *eng.ring.get(seq).expect("retained");
+        if ev.t < lo {
+            complete = true;
+            break;
+        }
+        if eng.g.cells.slots.is_live(ev.cell) {
+            events.push(ev);
+        }
+    }
+    complete.then(|| {
+        events.reverse();
+        events
+    })
+}
+
+/// Forward re-run of one segment with recorded spike timing and recomputed states; the
+/// competitive readout learns (Q only) at each recorded byte after the first.
+fn readout_forward(
+    eng: &mut Engine,
+    a: &Anchor,
+    span: u64,
+    touched: &BTreeSet<u32>,
+    rep: &mut ReplayReport,
+) {
+    let Some(events) = segment_with_arrival(eng, a, span) else {
+        return;
+    };
+    let p = eng.p.clone();
+    let window = 2 * p.t_heat.ceil() as u64;
+    let oldest = eng.ring.total() - eng.ring.len() as u64;
+    let mut state: Vec<V> = Vec::with_capacity(events.len());
+    let mut last: BTreeMap<u32, (u64, usize)> = BTreeMap::new();
+    let mut prev_arrival: Option<(u64, usize)> = None;
+    let mut probs = vec![0.0; crate::senses::N_BYTES];
+    for (k, ev) in events.iter().enumerate() {
+        let c = ev.cell.idx;
+        let cells = &eng.g.cells;
+        let h = match cells.kind[c as usize] {
+            Kind::Hidden => {
+                let mut u = ZERO;
+                for &e in &cells.ins[c as usize] {
+                    let i = e as usize;
+                    if let Some(&(ft, j)) = last.get(&eng.g.edges.src[i])
+                        && ft < ev.t
+                        && ft + window >= ev.t
+                    {
+                        let f = eng.g.edges.gain[i] * rules::decay(ev.t - ft - 1, p.t_heat);
+                        axpy(&mut u, f, &state[j]);
+                    }
+                }
+                let h_prev = match last.get(&c) {
+                    Some(&(_, j)) => Some(state[j]),
+                    None if ev.prev != NO_PREV && ev.prev >= oldest => {
+                        eng.ring.get(ev.prev).map(|x| dequant(&x.h))
+                    }
+                    None => None,
+                };
+                match h_prev {
+                    Some(hp) => {
+                        let h = rules::activate(&cells.w[c as usize], &hp, &u);
+                        if !touched.contains(&c) {
+                            let rec = dequant(&ev.h);
+                            rep.state_err_sum +=
+                                (0..D).map(|i| (h[i] - rec[i]).abs() as f64).sum::<f64>()
+                                    / D as f64;
+                            rep.state_err_n += 1;
+                        }
+                        h
+                    }
+                    None => dequant(&ev.h), // no recorded start state: keep what happened
+                }
+            }
+            Kind::Input => {
+                if let Some((t0, start)) = prev_arrival {
+                    readout_at_byte(
+                        eng, &events, &state, start, k, t0, ev.t, c as usize, &mut probs, rep,
+                    );
+                }
+                prev_arrival = Some((ev.t, k + 1));
+                eng.senses.codes[c as usize]
+            }
+        };
+        state.push(h);
+        last.insert(c, (ev.t, k));
+    }
+}
+
+/// One recorded byte `b` at `t`: input-cell traces from the recomputed hidden fires in
+/// `events[start..end]` (fired in `[t0, t)`), competitive scores, softmax, Q step.
+#[allow(clippy::too_many_arguments)]
+fn readout_at_byte(
+    eng: &mut Engine,
+    events: &[FireEvent],
+    state: &[V],
+    start: usize,
+    end: usize,
+    t0: u64,
+    t: u64,
+    b: usize,
+    probs: &mut [S],
+    rep: &mut ReplayReport,
+) {
+    let p = &eng.p;
+    let mut hot: BTreeMap<u32, V> = BTreeMap::new();
+    for j in start..end {
+        let ev = &events[j];
+        let c = ev.cell.idx as usize;
+        if eng.g.cells.kind[c] != Kind::Hidden || ev.t < t0 || ev.t >= t {
+            continue;
+        }
+        for &e in &eng.g.cells.outs[c] {
+            let i = e as usize;
+            let d = eng.g.edges.dst[i];
+            if eng.g.cells.kind[d as usize] == Kind::Input {
+                let f = eng.g.edges.gain[i] * rules::decay(t - ev.t - 1, p.t_heat);
+                axpy(hot.entry(d).or_insert(ZERO), f, &state[j]);
+            }
+        }
+    }
+    let mut scores = eng.senses.bias.clone();
+    for (&d, u) in &hot {
+        let d = d as usize;
+        let cells = &eng.g.cells;
+        scores[d] = rules::readout(&cells.q[d], u, &eng.senses.codes[d], scores[d]).1;
+    }
+    rules::softmax(&scores, probs);
+    rep.readout_updates += 1;
+    rep.readout_correct += u64::from(crate::senses::guess(&scores) as usize == b);
+    let p = eng.p.clone();
+    for (&d, u) in &hot {
+        let d = d as usize;
+        let e = rules::readout_error(&eng.senses.codes[d], d == b, probs[d]);
+        rules::readout_step(&mut eng.g.cells.q[d], &e, u, &p);
+    }
 }
 
 /// One dream: `dream_seeds` random hidden cells fire with their current state; messages spread
@@ -411,6 +580,25 @@ mod tests {
         eng
     }
 
+    /// With W unchanged, the forward re-run reproduces the recorded states up to i8
+    /// quantization and the trace-window truncation, and the readout step only touches Q.
+    #[test]
+    fn forward_rerun_reproduces_recorded_states() {
+        let text = b"the cat sat on the mat. ".repeat(80);
+        let p = Params {
+            consolidate_every: 200,
+            replay_per_pass: 16,
+            eta_w: 0.0,
+            ..Params::default()
+        };
+        let e = run(p, &text, 8 * 1500);
+        let n = e.stats.replay_state_n;
+        let err = e.stats.replay_state_err / n.max(1) as f64;
+        assert!(n > 100 && e.stats.replay_readout_updates > 0, "{n}");
+        eprintln!("forward state error {err} over {n} fires");
+        assert!(err < 0.05, "mean |h - recorded| = {err}");
+    }
+
     #[test]
     fn zero_rate_changes_nothing_and_replay_is_deterministic() {
         let text = b"the cat sat on the mat. ".repeat(80);
@@ -424,6 +612,7 @@ mod tests {
         };
         let frozen = Params {
             eta_w: 0.0,
+            replay_readout: false,
             ..on.clone()
         };
         let hash = |mut e: Engine| {

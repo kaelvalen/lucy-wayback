@@ -376,6 +376,21 @@ with an equal number of *self-generated* ones:
    `η_w = 0` leaves the state hash unchanged; a hand-computed two-hop δ; replay off/on
    determinism.
 
+**Readout consolidation (step 4 of the pass, `replay_readout`, on with replay).** The readout has
+to be consolidated in the same sleep pass, or it reads states that W no longer produces (routing
+fell 36 → 29 % without it). After the W updates and the dream pull-back, every replayed segment is
+re-run *forward* with the recorded spike timing. That covers who fired when, including the byte
+arrivals, which the ring already records as the input cells' forced fires (cell = byte, t =
+tick). States are recomputed under the new W: `h = tanh(W h⁻ + clip(u))`, u from the recomputed
+in-neighbour states in the trace window, and no tissue learning. At each recorded byte the
+input-cell traces are rebuilt from the recomputed hidden fires since the previous byte. The
+competitive readout scores them against the current biases, and each hot cell's Q takes the
+usual `eta_readout` step on `(y − p) code`. Biases are not replayed, because surprising segments
+would skew the frequencies; in-gains are not replayed either. Check: with W frozen, the forward
+re-run reproduces the recorded states to 0.0065 mean |Δh| per component (i8 quantization and
+window truncation). Metrics: `replay_readout_updates`, `replay_readout_accuracy`,
+`replay_state_err`.
+
 **As built.** `FireEvent.prev` links each ring fire to the same cell's previous fire (a
 `last_seq` column), so `h⁻` is an O(1) lookup; `w_norm0` holds the birth norm. Anchors are kept
 by `kernel::arrive` (top `replay_per_pass` by `−ln p(true byte)`) and consumed by the pass.

@@ -183,6 +183,10 @@ pub struct Stats {
     pub replay_delta_rms: f64,
     pub dream_fires: u64,
     pub dream_updates: u64,
+    pub replay_readout_updates: u64,
+    pub replay_readout_correct: u64,
+    pub replay_state_err: f64,
+    pub replay_state_n: u64,
     /// Fires of the current byte's wave by hop depth (branching-ratio estimate).
     pub depth_hist: [u64; 16],
     pub lost_events: u64,
@@ -232,6 +236,10 @@ impl Stats {
         self.replay_delta_rms += r.replay.delta_rms_sum;
         self.dream_fires += r.replay.dream_fires;
         self.dream_updates += r.replay.dream_updates;
+        self.replay_readout_updates += r.replay.readout_updates;
+        self.replay_readout_correct += r.replay.readout_correct;
+        self.replay_state_err += r.replay.state_err_sum;
+        self.replay_state_n += r.replay.state_err_n;
         self.edges_pruned_hidden += r.pruned_hidden;
         self.lost_events += r.lost_events;
     }
@@ -288,6 +296,10 @@ impl Stats {
         self.replay_delta_rms = 0.0;
         self.dream_fires = 0;
         self.dream_updates = 0;
+        self.replay_readout_updates = 0;
+        self.replay_readout_correct = 0;
+        self.replay_state_err = 0.0;
+        self.replay_state_n = 0;
         self.edges_pruned_hidden = 0;
         self.depth_hist = [0; 16];
         self.lost_events = 0;
@@ -401,6 +413,11 @@ pub struct Metrics {
     pub replay_delta_rms: Option<f64>,
     pub dream_fires: u64,
     pub dream_updates: u64,
+    /// Readout consolidation: bytes re-scored forward under the new W, their top-1, and the
+    /// forward re-run's mean state error on cells whose W did not change.
+    pub replay_readout_updates: u64,
+    pub replay_readout_accuracy: Option<f64>,
+    pub replay_state_err: Option<f64>,
     /// Fraction of reservoir-cell state components with |h| > 0.95 (tanh saturation).
     pub saturation: Option<f64>,
     /// Mean Frobenius norm of W over the reservoir sample, relative to birth.
@@ -606,6 +623,12 @@ impl Observatory {
             replay_delta_rms: ratio(s.replay_delta_rms, s.replay_w_updates),
             dream_fires: s.dream_fires,
             dream_updates: s.dream_updates,
+            replay_readout_updates: s.replay_readout_updates,
+            replay_readout_accuracy: ratio(
+                s.replay_readout_correct as f64,
+                s.replay_readout_updates,
+            ),
+            replay_state_err: ratio(s.replay_state_err, s.replay_state_n),
             saturation: (!self.reservoir.is_empty()).then(|| {
                 let sat: usize = self
                     .reservoir

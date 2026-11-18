@@ -76,6 +76,9 @@ pub struct Params {
     /// Dreams per pass (pre-update W, for dream consistency) and seed cells per dream.
     pub dreams_per_pass: u32,
     pub dream_seeds: u32,
+    /// Readout consolidation: re-run replayed segments forward under the updated W and give
+    /// the competitive readout its step on the recomputed input traces.
+    pub replay_readout: bool,
 }
 
 impl Default for Params {
@@ -114,6 +117,7 @@ impl Default for Params {
             replay_min_delta: 1e-3,
             dreams_per_pass: 32,
             dream_seeds: 8,
+            replay_readout: true,
         }
     }
 }
