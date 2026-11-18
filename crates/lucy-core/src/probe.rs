@@ -112,7 +112,15 @@ fn evaluate(w: &[f32], b: &[f32], d: &Sparse, rows: &[u32]) -> (f64, f64) {
 }
 
 /// Softmax regression by minibatch SGD; returns test (top-1, bits) after each epoch.
-pub fn train(d: &Sparse, train: &[u32], test: &[u32], seed: u64) -> Vec<(f64, f64)> {
+/// `mask` (n_feat x 256, 0/1): weight (j, b) may only be nonzero where mask = 1 (W starts at 0
+/// and masked steps are dropped), i.e. byte b's logit only reads the allowed features.
+pub fn train(
+    d: &Sparse,
+    train: &[u32],
+    test: &[u32],
+    seed: u64,
+    mask: Option<&[f32]>,
+) -> Vec<(f64, f64)> {
     let mut w = vec![0.0f32; d.n_feat * CLASSES];
     let mut b = [0.0f32; CLASSES];
     let mut rng = stream(seed, STREAM_PROBE);
@@ -137,8 +145,18 @@ pub fn train(d: &Sparse, train: &[u32], test: &[u32], seed: u64) -> Vec<(f64, f6
                 let s = step / (feats.len() as f32).sqrt();
                 for &j in feats {
                     let row = &mut w[j as usize * CLASSES..][..CLASSES];
-                    for (w, &g) in row.iter_mut().zip(gi) {
-                        *w -= s * g;
+                    match mask {
+                        None => {
+                            for (w, &g) in row.iter_mut().zip(gi) {
+                                *w -= s * g;
+                            }
+                        }
+                        Some(m) => {
+                            let m = &m[j as usize * CLASSES..][..CLASSES];
+                            for ((w, &g), &m) in row.iter_mut().zip(gi).zip(m) {
+                                *w -= s * g * m;
+                            }
+                        }
                     }
                 }
             }
@@ -202,6 +220,10 @@ pub struct ProbeReport {
     /// Probe ceiling: test top-1 and bits/byte of the reservoir probe (last epoch).
     pub probe_accuracy: f64,
     pub probe_bits: f64,
+    /// Edge-restricted probe: byte b's logit may only read hidden cells that have an edge into
+    /// input cell b at the checkpoint (the ceiling of the current topology).
+    pub edge_probe_accuracy: Option<f64>,
+    pub edge_probe_bits: Option<f64>,
     pub control_accuracy: f64,
     pub control_bits: f64,
     /// Count baselines on the same split: [unigram, bigram, trigram].
@@ -213,7 +235,13 @@ pub struct ProbeReport {
 
 /// Full protocol on one segment.
 /// `cum[j]`: Lucy's correct guesses before row j's byte (scores routing on the test rows).
-pub fn evaluate_segment(d: &Sparse, cum: &[u64], bytes_seen: u64, tick: u64) -> ProbeReport {
+pub fn evaluate_segment(
+    d: &Sparse,
+    cum: &[u64],
+    edge_mask: Option<&[f32]>,
+    bytes_seen: u64,
+    tick: u64,
+) -> ProbeReport {
     let t0 = std::time::Instant::now();
     let n = d.labels.len();
     let cut = n * 4 / 5;
@@ -228,8 +256,9 @@ pub fn evaluate_segment(d: &Sparse, cum: &[u64], bytes_seen: u64, tick: u64) -> 
         labels: d.labels.clone(),
         n_feat: CLASSES,
     };
-    let c = train(&control, &train_rows, &test_rows, 0);
-    let h = train(d, &train_rows, &test_rows, 0);
+    let c = train(&control, &train_rows, &test_rows, 0, None);
+    let h = train(d, &train_rows, &test_rows, 0, None);
+    let em = edge_mask.map(|m| train(d, &train_rows, &test_rows, 0, Some(m))[EPOCHS - 1]);
     ProbeReport {
         kind: "probe",
         bytes_seen,
@@ -242,6 +271,8 @@ pub fn evaluate_segment(d: &Sparse, cum: &[u64], bytes_seen: u64, tick: u64) -> 
         },
         probe_accuracy: h[EPOCHS - 1].0,
         probe_bits: h[EPOCHS - 1].1,
+        edge_probe_accuracy: em.map(|x| x.0),
+        edge_probe_bits: em.map(|x| x.1),
         control_accuracy: c[EPOCHS - 1].0,
         control_bits: c[EPOCHS - 1].1,
         baseline_accuracy: base.map(|x| x.0),
@@ -375,7 +406,13 @@ impl Prober {
             }
         }
         let cum: Vec<u64> = self.cum.iter().copied().collect();
-        Ok(evaluate_segment(&d, &cum, bytes, t))
+        let mut mask = vec![0.0f32; d.n_feat * CLASSES];
+        for b in 0..crate::senses::N_BYTES {
+            for &e in &eng.g.cells.ins[b] {
+                mask[eng.g.edges.src[e as usize] as usize * CLASSES + b] = 1.0;
+            }
+        }
+        Ok(evaluate_segment(&d, &cum, Some(&mask), bytes, t))
     }
 }
 
@@ -399,8 +436,27 @@ mod tests {
             d.indptr.push(d.indices.len() as u32);
             d.labels.push((f % 7) as u8);
         }
-        let r = evaluate_segment(&d, &[], 0, 0);
+        // Edge mask: class k may read feature j only if j % 7 == k: still perfect. Forbidding
+        // classes 0 and 1 their features leaves them indistinguishable (the bias can make
+        // "no evidence" mean one of them, not both).
+        let mut ok = vec![0.0; 50 * CLASSES];
+        let mut no0 = vec![0.0; 50 * CLASSES];
+        for j in 0..49 {
+            ok[j * CLASSES + j % 7] = 1.0;
+            if j % 7 > 1 {
+                no0[j * CLASSES + j % 7] = 1.0;
+            }
+        }
+        let r = evaluate_segment(&d, &[], Some(&ok), 0, 0);
         assert!(r.probe_accuracy > 0.99, "{r:?}");
+        assert!(r.edge_probe_accuracy.unwrap() > 0.99, "{r:?}");
+        let r0 = evaluate_segment(&d, &[], Some(&no0), 0, 0);
+        let frac = |k| d.labels[2400..].iter().filter(|&&y| y == k).count() as f64 / 600.0;
+        let acc0 = r0.edge_probe_accuracy.unwrap();
+        assert!(
+            acc0 < 1.0 - frac(0).min(frac(1)) + 0.02 && acc0 > 0.8,
+            "{r0:?}"
+        );
         assert!(r.baseline_accuracy[0] < 0.25);
 
         // "abab...": bigram and trigram are perfect on the test part, unigram is a coin flip.

@@ -235,7 +235,11 @@ the `scripts/probe.py` protocol: temporal 80/20 split, L2-normalized binary rows
 regression, minibatch SGD (batch 256, 6 epochs, lr 0.2/(1+epoch)), plus a one-hot previous-byte
 control probe and train-fitted count baselines on the same split. Each checkpoint writes a
 `{"kind": "probe"}` line (unhashed: observation only) with `probe_accuracy`/`probe_bits`,
-`readout_accuracy` (Lucy on the *same test bytes*), control and baselines; `--dump` adds the raw
+`readout_accuracy` (Lucy on the *same test bytes*), control and baselines, and the
+**edge-restricted probe** (`edge_probe_accuracy`): the same trainer, but byte b's logit may only
+read hidden cells that have an edge into input cell b at the checkpoint (masked weights start at 0
+and never move). It is the ceiling of the *current topology* for a competitive linear readout;
+full probe ≥ edge probe ≥ what Lucy's routing could reach with this wiring; `--dump` adds the raw
 windows in `probe.py` format, `--snapshots` a cell snapshot. Equivalence with the numpy reference:
 on byte-identical windows (CHILDES 300 k–500 k, seed 7) the Rust probe gives 44.45 % / 2.792 bits
 vs probe.py 44.52 % / 2.793 (shuffle-order noise; two probe.py runs on identical dynamics differ

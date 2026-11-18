@@ -84,6 +84,7 @@ def main():
     if probes:
         a.plot(px, [p["probe_accuracy"] for p in probes], "o-", color="C5", lw=2, label="tissue: probe ceiling")
         a.plot(px, [p.get("readout_accuracy") for p in probes], "s--", color="C0", label="routing: readout (probe test bytes)")
+        a.plot(px, [p.get("edge_probe_accuracy") for p in probes], "^-", color="C6", label="edge-restricted probe (current topology)")
     a.axhline(1 / 256, color="grey", ls=":", label="chance")
     a.set_title("Guess accuracy: routing (readout) vs tissue (probe ceiling)")
     a.legend()
