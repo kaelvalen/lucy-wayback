@@ -132,6 +132,9 @@ struct RunArgs {
     /// clone and probe them (0 = off).
     #[arg(long, default_value_t = 0)]
     probe_old: usize,
+    /// Add time-resolved and bigram-path probes and the path audit to each checkpoint.
+    #[arg(long)]
+    probe_paths: bool,
 }
 
 struct Setup {
@@ -159,6 +162,9 @@ impl RunArgs {
         ] {
             v.push(flag.to_string());
             v.push(val);
+        }
+        if self.probe_paths {
+            v.push("--probe-paths".to_string());
         }
         v
     }
@@ -255,6 +261,7 @@ fn simulate(
             dump,
             snapshots,
             old: s.corpus[..a.probe_old.min(s.corpus.len())].to_vec(),
+            paths: a.probe_paths,
         };
         obs.prober = Some(Prober::new(cfg, s.corpus.clone(), s.cfg.ticks_per_byte));
     }

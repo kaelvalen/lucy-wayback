@@ -264,6 +264,17 @@ vs probe.py 44.52 % / 2.793 (shuffle-order noise; two probe.py runs on identical
 by the same 0.07 %), control 41.05 % vs 41.02 %, count baselines identical. ≈ 9 s per 200 k-sample
 checkpoint.
 
+**Path diagnostics (`--probe-paths`, observatory only).** Probe rows keep each fire's tick
+offset k before the byte (row code `cell << 4 | k`), so each checkpoint also reports:
+- the **time-resolved edge-restricted probe**: the edge-restricted probe on cells fired exactly
+  k ticks before the byte, k = 1..K;
+- the **bigram-path probe**: full probe on only the direct hidden targets of the previous byte's
+  input cell (its ceiling should be ≈ the bigram);
+- a **path audit** over the bytes since the last checkpoint: the share of the true cell's
+  hidden in-edges whose source is a direct target of the previous byte, and the message heat
+  those edges (and all in-edges) carry at their arrival tick vs what is left at guess time,
+  plus how many ticks before the guess the bigram-path fires happen.
+
 `snapshot` writes one JSON line per live cell (theta, rate, v, tau, heat, degrees, gain norms).
 
 ## Determinism

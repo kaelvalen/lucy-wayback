@@ -22,6 +22,7 @@ use rand::seq::SliceRandom;
 use serde::Serialize;
 
 use crate::kernel::Engine;
+use crate::rules;
 use crate::seed::{STREAM_PROBE, stream};
 use crate::store::Kind;
 
@@ -235,7 +236,41 @@ pub struct ProbeReport {
     pub old_probe_accuracy: Option<f64>,
     pub old_probe_bits: Option<f64>,
     pub old_readout_accuracy: Option<f64>,
+    /// `--probe-paths` diagnostics (None otherwise).
+    pub paths: Option<PathReport>,
     pub train_secs: f64,
+}
+
+/// Where the next-byte information sits in time and on which path (`--probe-paths`).
+#[derive(Serialize, Debug, Clone, Default)]
+pub struct PathReport {
+    /// Edge-restricted probe on cells that fired exactly k ticks before the byte, k = 1..=K:
+    /// (top-1, bits) per k.
+    pub time_edge_probe: Vec<(f64, f64)>,
+    /// Full probe whose features are only the direct hidden targets of the previous byte's
+    /// input cell (that fired in the window): the bigram path's ceiling.
+    pub bigram_path_probe: (f64, f64),
+    /// Audit over the bytes since the last checkpoint: share of the true cell's hidden in-edges
+    /// whose source is a direct target of the previous byte; message heat per byte delivered by
+    /// those edges at its arrival tick vs left at guess time (decayed); same for all in-edges;
+    /// mean ticks between a bigram-path fire and the guess.
+    pub bigram_edge_fraction: f64,
+    pub bigram_heat_at_arrival: f64,
+    pub bigram_heat_at_guess: f64,
+    pub all_heat_at_arrival: f64,
+    pub all_heat_at_guess: f64,
+    pub bigram_fire_ticks_before_guess: f64,
+    pub bigram_fires_per_byte: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Audit {
+    bytes: u64,
+    in_edges: u64,
+    bigram_edges: u64,
+    bigram_fires: u64,
+    bigram_offset: f64,
+    heat: [f64; 4], // bigram arrival, bigram guess, all arrival, all guess
 }
 
 /// Full protocol on one segment.
@@ -286,6 +321,7 @@ pub fn evaluate_segment(
         old_probe_accuracy: None,
         old_probe_bits: None,
         old_readout_accuracy: None,
+        paths: None,
         train_secs: t0.elapsed().as_secs_f64(),
     }
 }
@@ -302,6 +338,8 @@ pub struct ProbeConfig {
     pub snapshots: bool,
     /// Fixed early segment for the forgetting measure (empty = off).
     pub old: Vec<u8>,
+    /// Time-resolved and bigram-path probes plus the path audit (≈ 10 extra trainings).
+    pub paths: bool,
 }
 
 /// Collect one window per byte while a clone of `eng` (consolidation off) reads `old`, then
@@ -364,6 +402,42 @@ pub struct Prober {
     cum: VecDeque<u64>,
     since_last: u64,
     buf: Vec<u32>,
+    fires: Vec<(u32, u64, f32)>,
+    audit: Audit,
+}
+
+/// Row codes: `cell << 4 | k`, k = ticks between the fire and the byte (1..=K, K < 16).
+fn cell_of(code: u32) -> u32 {
+    code >> 4
+}
+
+fn offset_of(code: u32) -> u32 {
+    code & 15
+}
+
+/// Sparse rows of distinct cells from coded rows, keeping codes that pass `keep`.
+fn rows_to_sparse(
+    rows: &VecDeque<Box<[u32]>>,
+    labels: &[u8],
+    n_feat: usize,
+    mut keep: impl FnMut(usize, u32) -> bool,
+) -> Sparse {
+    let mut d = Sparse {
+        indptr: vec![0],
+        n_feat,
+        labels: labels.to_vec(),
+        ..Sparse::default()
+    };
+    for (i, r) in rows.iter().enumerate() {
+        let start = d.indices.len();
+        for &code in r.iter() {
+            if keep(i, code) && d.indices[start..].last() != Some(&cell_of(code)) {
+                d.indices.push(cell_of(code));
+            }
+        }
+        d.indptr.push(d.indices.len() as u32);
+    }
+    d
 }
 
 impl Prober {
@@ -379,6 +453,8 @@ impl Prober {
             cum: VecDeque::new(),
             since_last: 0,
             buf: Vec::new(),
+            fires: Vec::new(),
+            audit: Audit::default(),
         }
     }
 
@@ -405,8 +481,11 @@ impl Prober {
     }
 
     fn record(&mut self, eng: &Engine, i: u64) {
-        let from = i * self.k - self.k;
+        assert!(self.k < 16, "probe row codes hold tick offsets < 16");
+        let arrival = i * self.k;
+        let from = arrival - self.k;
         self.buf.clear();
+        self.fires.clear();
         let mut seq = eng.ring.total();
         while seq > 0 {
             seq -= 1;
@@ -415,11 +494,21 @@ impl Prober {
                 break;
             }
             if eng.g.cells.kind[ev.cell.idx as usize] == Kind::Hidden {
-                self.buf.push(ev.cell.idx);
+                self.buf.push((ev.cell.idx << 4) | (arrival - ev.t) as u32);
+                if self.cfg.paths {
+                    let n =
+                        ev.h.iter()
+                            .map(|&x| (x as f32 / 127.0).powi(2))
+                            .sum::<f32>();
+                    self.fires.push((ev.cell.idx, ev.t, n.sqrt()));
+                }
             }
         }
         self.buf.sort_unstable();
         self.buf.dedup();
+        if self.cfg.paths && i >= 1 {
+            self.audit_byte(eng, i, arrival);
+        }
         if self.rows.len() == self.cfg.samples {
             self.rows.pop_front();
             self.labels.pop_front();
@@ -431,18 +520,97 @@ impl Prober {
         self.since_last += 1;
     }
 
+    /// Path audit for byte i: the true cell's hidden in-edges, which of them come from direct
+    /// targets of the previous byte's cell, and the heat their messages carry at arrival vs at
+    /// the guess (same `t_heat` decay as the input cell's trace).
+    fn audit_byte(&mut self, eng: &Engine, i: u64, arrival: u64) {
+        let (b, a) = (
+            self.corpus[i as usize] as usize,
+            self.corpus[i as usize - 1] as usize,
+        );
+        let cells = &eng.g.cells;
+        let edges = &eng.g.edges;
+        let targets: Vec<u32> = cells.outs[a]
+            .iter()
+            .map(|&e| edges.dst[e as usize])
+            .collect();
+        self.fires.sort_unstable_by_key(|f| f.0);
+        let au = &mut self.audit;
+        au.bytes += 1;
+        for &e in &cells.ins[b] {
+            let e = e as usize;
+            let src = edges.src[e];
+            if cells.kind[src as usize] != Kind::Hidden {
+                continue;
+            }
+            let bigram = targets.contains(&src);
+            au.in_edges += 1;
+            au.bigram_edges += u64::from(bigram);
+            let lo = self.fires.partition_point(|f| f.0 < src);
+            for &(_, ft, hn) in self.fires[lo..].iter().take_while(|f| f.0 == src) {
+                let at_arrival = (edges.gain[e].abs() * hn) as f64;
+                let at_guess = at_arrival * rules::decay(arrival - ft - 1, eng.p.t_heat) as f64;
+                au.heat[2] += at_arrival;
+                au.heat[3] += at_guess;
+                if bigram {
+                    au.heat[0] += at_arrival;
+                    au.heat[1] += at_guess;
+                    au.bigram_fires += 1;
+                    au.bigram_offset += (arrival - ft) as f64;
+                }
+            }
+        }
+    }
+
+    fn path_report(&mut self, eng: &Engine, mask: &[f32], labels: &[u8]) -> PathReport {
+        let n_feat = eng.g.cells.slots.capacity();
+        let cut = labels.len() * 4 / 5;
+        let train_rows: Vec<u32> = (2..cut as u32).collect();
+        let test_rows: Vec<u32> = (cut as u32..labels.len() as u32).collect();
+        let time_edge_probe = (1..=self.k as u32)
+            .map(|k| {
+                let d = rows_to_sparse(&self.rows, labels, n_feat, |_, c| offset_of(c) == k);
+                train(&d, &train_rows, &test_rows, 0, Some(mask))[EPOCHS - 1]
+            })
+            .collect();
+        let targets: Vec<Vec<u32>> = (0..crate::senses::N_BYTES)
+            .map(|a| {
+                let mut v: Vec<u32> = eng.g.cells.outs[a]
+                    .iter()
+                    .map(|&e| eng.g.edges.dst[e as usize])
+                    .collect();
+                v.sort_unstable();
+                v
+            })
+            .collect();
+        let d = rows_to_sparse(&self.rows, labels, n_feat, |i, c| {
+            i > 0
+                && targets[labels[i - 1] as usize]
+                    .binary_search(&cell_of(c))
+                    .is_ok()
+        });
+        let bigram_path_probe = train(&d, &train_rows, &test_rows, 0, None)[EPOCHS - 1];
+        let au = std::mem::take(&mut self.audit);
+        let per_byte = |x: f64| x / au.bytes.max(1) as f64;
+        PathReport {
+            time_edge_probe,
+            bigram_path_probe,
+            bigram_edge_fraction: au.bigram_edges as f64 / au.in_edges.max(1) as f64,
+            bigram_heat_at_arrival: per_byte(au.heat[0]),
+            bigram_heat_at_guess: per_byte(au.heat[1]),
+            all_heat_at_arrival: per_byte(au.heat[2]),
+            all_heat_at_guess: per_byte(au.heat[3]),
+            bigram_fire_ticks_before_guess: au.bigram_offset / au.bigram_fires.max(1) as f64,
+            bigram_fires_per_byte: per_byte(au.bigram_fires as f64),
+        }
+    }
+
     fn checkpoint(&mut self, eng: &Engine, t: u64) -> io::Result<ProbeReport> {
         self.since_last = 0;
-        let mut d = Sparse {
-            indptr: vec![0],
-            n_feat: eng.g.cells.slots.capacity(),
-            labels: self.labels.iter().copied().collect(),
-            ..Sparse::default()
-        };
-        for r in &self.rows {
-            d.indices.extend_from_slice(r);
-            d.indptr.push(d.indices.len() as u32);
-        }
+        let labels: Vec<u8> = self.labels.iter().copied().collect();
+        let d = rows_to_sparse(&self.rows, &labels, eng.g.cells.slots.capacity(), |_, _| {
+            true
+        });
         let bytes = self.next;
         if let Some(dir) = &self.cfg.dir {
             fs::create_dir_all(dir)?;
@@ -475,6 +643,9 @@ impl Prober {
             }
         }
         let mut r = evaluate_segment(&d, &cum, Some(&mask), bytes, t);
+        if self.cfg.paths {
+            r.paths = Some(self.path_report(eng, &mask, &labels));
+        }
         if let Some((a, b, ro)) = old {
             (
                 r.old_probe_accuracy,
