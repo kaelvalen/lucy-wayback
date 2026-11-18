@@ -581,6 +581,33 @@ full probe on the first 20 k bytes, re-read through a frozen clone.
 - **Before turning it on:** the readout must track W. Options are a slower `eta_w` with more
   segments, or re-fitting the readout from replay. Either way, C stays off by default.
 
+### Growth law A with the competitive readout, and C with readout consolidation (`7b9fc45`), CHILDES 1 MiB
+
+Means over 10 checkpoints (`scripts/compare.py`); bigram on the same test bytes 41.2 %.
+
+| run | routing s7 / s11 | edge-restricted s7 / s11 | tissue s7 / s11 | own surprise | forgetting probe (s11) |
+|---|---|---|---|---|---|
+| old readout (`909c19a`) | 32.4 / 34.2 % | 38.6 / 38.7 % | 44.50 / 45.15 % | – | – |
+| competitive, cap 32 | 36.4 / 36.6 % | 37.8 / 38.9 % | 44.50 / 45.15 % | 3.41 / 3.35 | 46.2 → 42.8 % |
+| competitive, cap 128 | **38.5 / 35.8 %** | **39.9 / 40.1 %** | 44.50 / 45.15 % | 3.42 / 3.43 | (same tissue) |
+| + C, no readout consolidation | 29.6 / 29.5 % | 38.9 / 39.8 % | 45.27 / 45.78 % | 5.82 / 5.88 | 46.8 → 44.1 % |
+| + C with readout consolidation | 30.2 / 31.2 % | 38.4 / 39.8 % | **45.29 / 46.60 %** | 4.30 / 4.57 | 47.7 → 44.7 % |
+
+- **Step 2 is confirmed on seed 11:** routing +2.4 points over the old readout (seed 7: +4.0).
+- **Cap 128** lets input cells keep ≈ 20 in-edges (vs 5.5). The edge-restricted ceiling rises
+  by 1.2–2.1 points on both seeds. Routing rises on seed 7 (+2.1) and dips on seed 11 (−0.8).
+  Nothing clears the bigram yet.
+- **Readout consolidation keeps C's tissue gain but does not save routing.**
+  - The tissue gain holds: +0.8 / +1.5 points.
+  - Routing is +0.6 / +1.7 points better than without consolidation, but still 6 points below
+    no replay. Own surprise improves 5.8 → 4.3–4.6 bits (no replay: 3.4).
+  - The edge-restricted probe under C is as high as without replay, so the information is in
+    the wiring. The readout no longer reads it (8-point gap, against 1.4).
+  - Likely causes: (1) consolidation trains Q only on the most surprising segments (forward
+    replay top-1 21.6 %), a skewed sample; (2) the tissue change itself, with reverb up 4–7
+    points and hot inputs per byte 12.4 → 10.6, gives noisier input traces.
+- Saturation stays at 2.6–3.5 % (alarm: 10 %).
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
