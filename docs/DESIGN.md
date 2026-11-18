@@ -386,7 +386,10 @@ in-neighbour states in the trace window, and no tissue learning. At each recorde
 input-cell traces are rebuilt from the recomputed hidden fires since the previous byte. The
 competitive readout scores them against the current biases, and each hot cell's Q takes the
 usual `eta_readout` step on `(y − p) code`. Biases are not replayed, because surprising segments
-would skew the frequencies; in-gains are not replayed either. Check: with W frozen, the forward
+would skew the frequencies; in-gains are not replayed either. **Segments for the readout
+(`readout_uniform`, default on):** a uniform sample of the pass's byte arrivals, as many as
+`replay_per_pass`, not the surprise-ranked W-replay segments. Trained only on the hardest
+segments (forward top-1 21.6 %), Q saw a skewed sample. W feedback keeps the surprise ranking. Check: with W frozen, the forward
 re-run reproduces the recorded states to 0.0065 mean |Δh| per component (i8 quantization and
 window truncation). Metrics: `replay_readout_updates`, `replay_readout_accuracy`,
 `replay_state_err`.

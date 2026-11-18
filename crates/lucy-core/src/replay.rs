@@ -108,8 +108,9 @@ fn rms_clip(d: &mut V) -> S {
     }
 }
 
-/// Whole pass: dreams (pre-update W), real reverse replays, dream consistency.
-pub fn wayback(eng: &mut Engine, t: u64) -> ReplayReport {
+/// Whole pass: dreams (pre-update W), real reverse replays, dream consistency, readout
+/// consolidation. `from`: first ring sequence number of this pass.
+pub fn wayback(eng: &mut Engine, t: u64, from: u64) -> ReplayReport {
     let p = eng.p.clone();
     let mut rep = ReplayReport::default();
     let mut anchors = std::mem::take(&mut eng.plasticity.anchors);
@@ -152,13 +153,49 @@ pub fn wayback(eng: &mut Engine, t: u64) -> ReplayReport {
         rep.dream_updates += 1;
     }
 
-    // 4. Readout consolidation on the same segments, forward, under the updated W.
+    // 4. Readout consolidation, forward, under the updated W: on a uniform sample of the
+    //    pass's byte arrivals (`readout_uniform`), or on the surprise-ranked segments.
     if p.replay_readout {
-        for a in &anchors {
+        let ends = if p.readout_uniform {
+            uniform_arrivals(eng, from, anchors.len(), &mut rng)
+        } else {
+            anchors
+        };
+        for a in &ends {
             readout_forward(eng, a, span, &touched, &mut rep);
         }
     }
     rep
+}
+
+/// `k` byte arrivals (input-cell forced fires) of this pass, uniformly without replacement,
+/// as segment ends in ring order.
+fn uniform_arrivals(eng: &Engine, from: u64, k: usize, rng: &mut impl Rng) -> Vec<Anchor> {
+    let total = eng.ring.total();
+    let from = from.max(total - eng.ring.len() as u64);
+    let mut arrivals: Vec<(u64, u64)> = (from..total)
+        .filter_map(|s| {
+            let ev = eng.ring.get(s)?;
+            (eng.g.cells.kind[ev.cell.idx as usize] == Kind::Input).then_some((s, ev.t))
+        })
+        .collect();
+    let k = k.min(arrivals.len());
+    for i in 0..k {
+        let j = rng.random_range(i..arrivals.len());
+        arrivals.swap(i, j);
+    }
+    arrivals.truncate(k);
+    arrivals.sort_unstable();
+    arrivals
+        .into_iter()
+        .map(|(seq, t)| Anchor {
+            surprise: 0.0,
+            t,
+            seq,
+            toward: ZERO,
+            sources: Vec::new(),
+        })
+        .collect()
 }
 
 /// Ring events (all kinds) in `[t_a - span, t_a]` up to and including the anchor's own byte
@@ -547,7 +584,7 @@ mod tests {
             toward,
             sources: vec![(h2.idx, 1.0)],
         }];
-        let rep = wayback(&mut eng, 3);
+        let rep = wayback(&mut eng, 3, 0);
         assert_eq!((rep.segments, rep.w_updates, rep.lost), (1, 2, 0));
         let w2 = eng.g.cells.w[h2.idx as usize];
         let w1 = eng.g.cells.w[h1.idx as usize];

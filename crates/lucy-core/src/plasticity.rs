@@ -201,7 +201,7 @@ pub fn consolidate(eng: &mut Engine, t: u64) -> PassReport {
         }
     }
     // 4. Wayback: reverse replay into W (after growth and pruning).
-    rep.replay = crate::replay::wayback(eng, t);
+    rep.replay = crate::replay::wayback(eng, t, from);
     rep
 }
 

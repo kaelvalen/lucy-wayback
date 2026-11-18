@@ -79,6 +79,9 @@ pub struct Params {
     /// Readout consolidation: re-run replayed segments forward under the updated W and give
     /// the competitive readout its step on the recomputed input traces.
     pub replay_readout: bool,
+    /// Readout consolidation segments: a uniform sample of the pass's byte arrivals (true) or
+    /// the surprise-ranked W-replay segments (false). Same count as `replay_per_pass`.
+    pub readout_uniform: bool,
 }
 
 impl Default for Params {
@@ -118,6 +121,7 @@ impl Default for Params {
             dreams_per_pass: 32,
             dream_seeds: 8,
             replay_readout: true,
+            readout_uniform: true,
         }
     }
 }
