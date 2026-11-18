@@ -512,6 +512,31 @@ test bytes at each 100 k checkpoint (probe = last 200 k windows).
   information. Information has to come from a teacher signal, which motivates plan C:
   reality-anchored W learning.
 
+### Competitive readout (`ac1bb4c`) vs regression-to-code, CHILDES 1 MiB, seed 7
+
+Three-way split at each 100 k checkpoint: *routing* (Lucy's readout on the probe's test bytes),
+*edge-restricted probe* (ceiling of the current wiring), *full probe* (tissue). Means of 10
+checkpoints:
+
+| readout | routing | edge-restricted probe | full probe | gap to edge probe | Lucy's own surprise | calibrated surprise |
+|---|---|---|---|---|---|---|
+| regression to code + LMS prior (`909c19a`) | 32.4 % | 38.6 % | 44.5 % | 6.2 pts | n/a | 3.87 bits |
+| competitive (softmax) | **36.4 %** | 37.8 % | 44.5 % | **1.4 pts** | **3.41 bits** | 3.41 bits |
+
+- **Routing now nearly reaches the current topology's ceiling.** The gap closes from 6.2 to 1.4
+  points. Lucy's own probabilities are calibrated without fitting (own surprise = calibrated
+  3.41 bits, versus unigram 4.68, KT bigram 2.76).
+- **The remaining limit is the wiring.** The edge-restricted probe stays at 37–39 %, against
+  44.5 % for all cells. Each input cell reads ≈ 5.5 sources, and the next lever is which cells
+  wire in: growth law A now has a readout able to use what it adds.
+- The edge probe is ≈ 0.8 points *lower* under the competitive readout. The growth law reads
+  `1 − p(true)`, which changes which edges survive.
+- Getting there needed two fixes found in the first sweep:
+  - The readout needs its own step (`eta_readout`); sharing `eta_q` with the hidden cells also
+    changed the tissue.
+  - The normalization needs a regularizer (`readout_eps` = 1). With 1e-3, own surprise was
+    4.6–6.8 bits from overconfident logits.
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
