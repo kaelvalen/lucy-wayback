@@ -672,6 +672,48 @@ Input-cell trace timescale `t_heat_input`, means of 10 checkpoints:
   B's sequence-copying edges plus W updates build tight self-exciting loops that homeostasis
   can only contain.
 
+### D: long-horizon run on the 68 MB corpus (`c81d1e3`: old regression readout, growth law A, no B/C), seed 7
+
+`childes-dialogue1.txt` (68.8 MB). Checkpoints every 2 MB: probe on the last 200 k windows, metrics,
+cell snapshot. The run was **stopped at 12.76 MB** (machine shutdown) after ≈ 11 h. Most of that
+time it shared 8 physical cores with up to 16 sweep processes (see Memory behaviour), so it ran
+well below its 2.6 M events/s alone. No save/resume exists yet, so it cannot be continued.
+
+| checkpoint | routing | tissue (probe) | control | bigram / trigram | probe bits | readout (2 MB windows) | fires/tick (max) | reverb | theta (reservoir, min–max) | branching | in-edges / input cell |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2 MB | 31.9 % | 44.60 % | 41.2 % | 41.4 / 57.1 % | 2.798 | 32.3 % | 20.54 (446) | 31.7 % | 0.040–0.490 | 0.948 | 5.39 |
+| 4 MB | 32.1 % | 44.93 % | 41.7 % | 41.7 / 57.4 % | 2.792 | 32.0 % | 20.58 (708) | 35.0 % | 0.040–0.108 | 0.946 | 5.70 |
+| 6 MB | 32.0 % | 44.11 % | 40.9 % | 40.9 / 57.1 % | 2.828 | 32.1 % | 20.59 (430) | 35.2 % | 0.036–0.129 | 0.946 | 5.71 |
+| 8 MB | 32.5 % | 45.16 % | 41.8 % | 41.9 / 57.6 % | 2.785 | 32.1 % | 20.59 (489) | 35.3 % | 0.032–0.111 | 0.946 | 5.76 |
+| 10 MB | 32.2 % | 44.90 % | 40.9 % | 41.2 / 57.1 % | 2.803 | 32.3 % | 20.59 (500) | 35.3 % | 0.038–0.100 | 0.946 | 5.80 |
+| 12 MB | 32.3 % | 44.53 % | 41.2 % | 41.3 / 57.3 % | 2.787 | 32.3 % | 20.59 (421) | 35.3 % | 0.036–0.115 | 0.946 | 5.78 |
+
+- **Answer to "improve, plateau or destabilize?": flat and stable.** By 2 MB the run sits on the
+  same plateau as at 1 MiB (routing 32 %, tissue 44.5 %) and stays there to 12 MB:
+  - routing 31.9–32.5 %, tissue 44.1–45.2 %;
+  - checkpoint differences follow the test segment's difficulty (the control and the bigram
+    move with them).
+- **No slow drift or instability over 12 MB (≈ 100 M ticks):**
+  - fires per tick are held at 20.6 (budget 20.5) and branching at 0.946, subcritical;
+  - reverb settles at 35 % (alarm 60 %);
+  - reservoir theta stays at 0.03–0.13 after the first 2 MB, low but not falling;
+  - single-tick maxima of 420–710 fires are transient bursts, not trends;
+  - in-degree of input cells creeps 5.4 → 5.8.
+- **Without W learning and with the old readout, more data buys nothing:** the tissue is a fixed
+  random reservoir, and the routing plateau is the readout's and the wiring's.
+
+## Next (queued)
+
+0. **Full save/resume.** Write the whole engine state to disk and continue bit-identically: cells,
+   edges, scheduler (wheel, overflow heap, per-tick state arena), ring, senses, plasticity (incl.
+   anchors and tension state), RNG streams, logical clock and observatory counters. Test: run N
+   ticks → save → load → run M ticks must give the same state hash as N + M ticks
+   uninterrupted. Long runs save automatically at each 2 MB checkpoint.
+1. Wiring for the bigram path: growth currently picks only 3 % bigram-path in-edges. Next to
+   try is ranking candidates by lift instead of excess. Goal: routing > bigram (41.2 %).
+2. C's routing collapse (and C + B's local runaways): open, see above.
+3. f16/bf16 W/Q storage: revisit once routing clears bigram, as a new baseline tag.
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
