@@ -11,6 +11,10 @@ use crate::num::{D, M, S, V, axpy, dot, matvec, norm2, outer_add, scale, sub};
 pub struct Params {
     /// Decay timescale of u, heat and credit (the coincidence / trace window).
     pub t_heat: S,
+    /// Trace timescale of input cells (u, heat, credit), in ticks. Their trace is read once,
+    /// at the next byte; with `t_heat` the bigram path's messages (fired ~7 ticks before the
+    /// guess) keep only ~e^-1.5 of their weight.
+    pub t_heat_input: S,
     /// Rate EMA timescale; also the evidence horizon of threshold homeostasis.
     pub t_rate: S,
     /// Vitality timescale (cells and edges).
@@ -88,6 +92,7 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             t_heat: 4.0,
+            t_heat_input: 4.0,
             t_rate: 2000.0,
             t_v: 100_000.0,
             t_adapt: 50.0,
@@ -130,6 +135,7 @@ impl Params {
     pub fn validate(&self) -> Result<(), String> {
         let positive = [
             ("t_heat", self.t_heat),
+            ("t_heat_input", self.t_heat_input),
             ("t_rate", self.t_rate),
             ("t_v", self.t_v),
             ("t_adapt", self.t_adapt),
@@ -257,6 +263,7 @@ pub fn decay_scalars(s: Scalars, dt: u64, p: &Params) -> Scalars {
 #[derive(Clone, Debug)]
 pub struct Decay {
     heat: Vec<S>,
+    heat_input: Vec<S>,
     adapt: Vec<S>,
     rate: Vec<S>,
     v: Vec<S>,
@@ -271,6 +278,7 @@ impl Decay {
         let table = |tau: S| (0..DECAY_TABLE).map(|dt| decay(dt, tau)).collect();
         Self {
             heat: table(p.t_heat),
+            heat_input: table(p.t_heat_input),
             adapt: table(p.t_adapt),
             rate: table(p.t_rate),
             v: table(p.t_v),
@@ -291,6 +299,12 @@ impl Decay {
     #[inline]
     pub fn heat(&self, dt: u64, p: &Params) -> S {
         Self::factor(&self.heat, dt, p.t_heat)
+    }
+
+    /// The trace decay factor of an input cell over `dt` (`t_heat_input`).
+    #[inline]
+    pub fn heat_input(&self, dt: u64, p: &Params) -> S {
+        Self::factor(&self.heat_input, dt, p.t_heat_input)
     }
 
     /// Exactly [`decay_scalars`], with each exponential evaluated at most once.

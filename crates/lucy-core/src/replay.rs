@@ -326,7 +326,7 @@ fn readout_at_byte(
             let i = e as usize;
             let d = eng.g.edges.dst[i];
             if eng.g.cells.kind[d as usize] == Kind::Input {
-                let f = eng.g.edges.gain[i] * rules::decay(t - ev.t - 1, p.t_heat);
+                let f = eng.g.edges.gain[i] * rules::decay(t - ev.t - 1, p.t_heat_input);
                 axpy(hot.entry(d).or_insert(ZERO), f, &state[j]);
             }
         }
@@ -473,9 +473,10 @@ fn replay_segment(
     let window = 2 * p.t_heat.ceil() as u64;
     let mut delta: BTreeMap<usize, V> = BTreeMap::new();
     // Seed: the input cell's desired input change, sent to the hidden cells that fed it.
+    let since_byte = a.t.saturating_sub(eng.senses.ticks_per_byte);
     for &(src, gain) in &a.sources {
-        if let Some((ft, k)) = latest(src, a.t.saturating_sub(window), a.t) {
-            let f = gain * rules::decay(a.t - ft - 1, p.t_heat);
+        if let Some((ft, k)) = latest(src, since_byte, a.t) {
+            let f = gain * rules::decay(a.t - ft - 1, p.t_heat_input);
             axpy(delta.entry(k).or_insert(ZERO), f, &a.toward);
         }
     }

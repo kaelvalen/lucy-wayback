@@ -176,6 +176,7 @@ tie-breaks keep it deterministic (tested).
 | Constant | Default | Rationale |
 |---|---|---|
 | `t_heat` | 4 ticks | Coincidence/trace window. Half of K, so a message landing early in a byte window still counts (e^-2) but the previous byte's prediction is mostly gone by the next. `u`, `heat`, `credit` share it to keep `u == Σ credit`. |
+| `t_heat_input` | 4 ticks (= `t_heat`) | Input cells' trace timescale (u, heat, credit), read once at the next byte. Also used by replay for the input hop (seed now looks back one byte window instead of `2·t_heat`). |
 | `t_rate` | 2000 ticks | Rate EMA window. ~10 fires at target rate, enough for a stable estimate. Also the homeostasis evidence horizon: the EMA has forgotten anything older, so silence beyond it must not be counted (or theta → 0 after a long sleep). |
 | `t_v` | 100 000 ticks | Vitality is a slow usage memory (future: death/pruning). Long compared with everything else. |
 | `t_adapt` | 50 ticks | Fast adaptation must outlast an avalanche (several byte windows) but be gone by the next normal fire (1/target_rate = 200 ticks: e^-4 ≈ 0.02 left). |

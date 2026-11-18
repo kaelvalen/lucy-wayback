@@ -549,7 +549,8 @@ impl Prober {
             let lo = self.fires.partition_point(|f| f.0 < src);
             for &(_, ft, hn) in self.fires[lo..].iter().take_while(|f| f.0 == src) {
                 let at_arrival = (edges.gain[e].abs() * hn) as f64;
-                let at_guess = at_arrival * rules::decay(arrival - ft - 1, eng.p.t_heat) as f64;
+                let at_guess =
+                    at_arrival * rules::decay(arrival - ft - 1, eng.p.t_heat_input) as f64;
                 au.heat[2] += at_arrival;
                 au.heat[3] += at_guess;
                 if bigram {

@@ -154,9 +154,16 @@ impl Engine {
             return;
         }
         cells.last_t[c] = t;
-        let s = self.decay.scalars(cells.scalars(c), dt, &self.p);
+        let heat0 = cells.heat[c];
+        let mut s = self.decay.scalars(cells.scalars(c), dt, &self.p);
+        let f = if cells.kind[c] == Kind::Input {
+            let f = self.decay.heat_input(dt, &self.p);
+            s.heat = heat0 * f;
+            f
+        } else {
+            self.decay.heat(dt, &self.p)
+        };
         cells.set_scalars(c, s);
-        let f = self.decay.heat(dt, &self.p);
         if f < S::EPSILON {
             // Trace has decayed below f32 resolution relative to any fresh input: drop it (frees credit memory).
             cells.clear_input(c);
