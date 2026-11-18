@@ -24,6 +24,7 @@ struct FireOut {
     e2: S,
 }
 
+#[derive(Clone)]
 pub struct Engine {
     pub p: Params,
     pub g: Graph,
@@ -327,11 +328,14 @@ impl Engine {
                 wave.next_hop(),
             );
         }
+        let seq = ring.total();
         ring.push(FireEvent {
             cell: g.cells.slots.id(c as u32),
             t,
             h: quantize_unit(&h),
+            prev: g.cells.last_seq[c],
         });
+        g.cells.last_seq[c] = seq;
         self.stats.on_fire(c, t);
     }
 
@@ -390,6 +394,25 @@ impl Engine {
             self.learn_in_gains(c, &toward);
             if truth {
                 self.plasticity.observe_error(b, 1.0 - probs[b], &self.p);
+                if self.p.replay_per_pass > 0 {
+                    let (cells, edges) = (&self.g.cells, &self.g.edges);
+                    let sources = cells.credit[b]
+                        .iter()
+                        .filter(|cr| edges.slots.is_live(cr.edge))
+                        .map(|cr| cr.edge.idx as usize)
+                        .filter(|&i| cells.kind[edges.src[i] as usize] == Kind::Hidden)
+                        .map(|i| (edges.src[i], edges.gain[i]))
+                        .collect();
+                    let anchor = crate::replay::Anchor {
+                        surprise: -probs[b].max(1e-30).ln(),
+                        t,
+                        seq: self.ring.total(),
+                        toward,
+                        sources,
+                    };
+                    let cap = self.p.replay_per_pass as usize;
+                    crate::replay::offer(&mut self.plasticity.anchors, anchor, cap);
+                }
                 // In-edges that fed the cell whose byte really arrived earn vitality.
                 let Graph { cells, edges } = &mut self.g;
                 for cr in &cells.credit[c] {

@@ -53,7 +53,7 @@ struct Msg {
     wave: Wave,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Bucket {
     sense: usize,
     deliver: Vec<Msg>,
@@ -79,6 +79,7 @@ impl Bucket {
 
 const WHEEL: usize = 64;
 
+#[derive(Clone)]
 pub struct Scheduler {
     buckets: Vec<Bucket>,
     /// Lowest tick that may still hold events (the bucket being consumed).

@@ -9,9 +9,15 @@ pub struct FireEvent {
     pub t: u64,
     /// State after the fire, quantized: `round(h * 127)` (h is a tanh output, so exact range).
     pub h: [i8; D],
+    /// Ring sequence number of the same cell's previous fire (`NO_PREV` if none): its state is
+    /// the `h` this fire started from (wayback replay reads it in O(1)).
+    pub prev: u64,
 }
 
+pub const NO_PREV: u64 = u64::MAX;
+
 /// Fixed-capacity, overwrite-oldest ring addressed by a global, monotonic sequence number.
+#[derive(Clone)]
 pub struct Ring {
     buf: Vec<FireEvent>,
     cap: usize,
@@ -78,6 +84,7 @@ mod tests {
             },
             t,
             h: [0; D],
+            prev: NO_PREV,
         }
     }
 

@@ -230,6 +230,11 @@ pub struct ProbeReport {
     pub baseline_accuracy: [f64; 3],
     pub baseline_bits: [f64; 3],
     pub probe_history: Vec<(f64, f64)>,
+    /// Forgetting measure: a clone of the engine with consolidation off (W frozen) re-reads the
+    /// first `old` corpus bytes; full probe and Lucy's readout on that fixed early segment.
+    pub old_probe_accuracy: Option<f64>,
+    pub old_probe_bits: Option<f64>,
+    pub old_readout_accuracy: Option<f64>,
     pub train_secs: f64,
 }
 
@@ -278,6 +283,9 @@ pub fn evaluate_segment(
         baseline_accuracy: base.map(|x| x.0),
         baseline_bits: base.map(|x| x.1),
         probe_history: h,
+        old_probe_accuracy: None,
+        old_probe_bits: None,
+        old_readout_accuracy: None,
         train_secs: t0.elapsed().as_secs_f64(),
     }
 }
@@ -292,6 +300,57 @@ pub struct ProbeConfig {
     pub dir: Option<PathBuf>,
     pub dump: bool,
     pub snapshots: bool,
+    /// Fixed early segment for the forgetting measure (empty = off).
+    pub old: Vec<u8>,
+}
+
+/// Collect one window per byte while a clone of `eng` (consolidation off) reads `old`, then
+/// probe it: (probe top-1, probe bits, Lucy readout top-1 on the test bytes).
+pub fn old_segment_probe(eng: &Engine, old: &[u8]) -> Option<(f64, f64, f64)> {
+    let mut e = eng.clone();
+    e.p.consolidate_every = 0;
+    e.parallel = false;
+    let k = e.senses.ticks_per_byte;
+    let mut next = e
+        .scheduler()
+        .sorted()
+        .into_iter()
+        .find(|ev| matches!(ev.payload, crate::scheduler::Payload::Arrive))?
+        .t;
+    let mut src = old.iter().copied();
+    let mut d = Sparse {
+        indptr: vec![0],
+        n_feat: e.g.cells.slots.capacity(),
+        ..Sparse::default()
+    };
+    let mut cum = Vec::with_capacity(old.len());
+    let mut buf = Vec::new();
+    for &label in old {
+        while e.next_time().is_some_and(|t| t < next) {
+            e.step(&mut src);
+        }
+        buf.clear();
+        let mut seq = e.ring.total();
+        while seq > 0 {
+            seq -= 1;
+            let Some(ev) = e.ring.get(seq) else { break };
+            if ev.t + k < next {
+                break;
+            }
+            if e.g.cells.kind[ev.cell.idx as usize] == Kind::Hidden {
+                buf.push(ev.cell.idx);
+            }
+        }
+        buf.sort_unstable();
+        buf.dedup();
+        d.indices.extend_from_slice(&buf);
+        d.indptr.push(d.indices.len() as u32);
+        d.labels.push(label);
+        cum.push(e.stats.correct_total);
+        next += k;
+    }
+    let r = evaluate_segment(&d, &cum, None, 0, 0);
+    Some((r.probe_accuracy, r.probe_bits, r.readout_accuracy))
 }
 
 /// Records windows during a run and probes at checkpoints. Reads the engine only.
@@ -405,6 +464,9 @@ impl Prober {
                 )?;
             }
         }
+        let old = (!self.cfg.old.is_empty())
+            .then(|| old_segment_probe(eng, &self.cfg.old))
+            .flatten();
         let cum: Vec<u64> = self.cum.iter().copied().collect();
         let mut mask = vec![0.0f32; d.n_feat * CLASSES];
         for b in 0..crate::senses::N_BYTES {
@@ -412,7 +474,15 @@ impl Prober {
                 mask[eng.g.edges.src[e as usize] as usize * CLASSES + b] = 1.0;
             }
         }
-        Ok(evaluate_segment(&d, &cum, Some(&mask), bytes, t))
+        let mut r = evaluate_segment(&d, &cum, Some(&mask), bytes, t);
+        if let Some((a, b, ro)) = old {
+            (
+                r.old_probe_accuracy,
+                r.old_probe_bits,
+                r.old_readout_accuracy,
+            ) = (Some(a), Some(b), Some(ro));
+        }
+        Ok(r)
     }
 }
 

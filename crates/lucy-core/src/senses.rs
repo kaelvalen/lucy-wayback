@@ -10,6 +10,7 @@ use crate::seed::{STREAM_CODES, stream};
 
 pub const N_BYTES: usize = 256;
 
+#[derive(Clone)]
 pub struct Senses {
     /// Seed-derived code per byte, entries in {-1, +1} (inside the tanh range of cell states).
     pub codes: Vec<V>,

@@ -36,6 +36,9 @@ pub struct Plasticity {
     pub floor: Vec<S>,
     pub excess: Vec<S>,
     pub carry: Vec<S>,
+    /// Wayback: the pass's most surprising arrivals, and the dream RNG seed.
+    pub anchors: Vec<crate::replay::Anchor>,
+    pub dream_seed: u64,
 }
 
 impl Default for Plasticity {
@@ -48,6 +51,8 @@ impl Default for Plasticity {
             floor: vec![1.0; N_BYTES],
             excess: vec![0.0; N_BYTES],
             carry: vec![0.0; N_BYTES],
+            anchors: Vec::new(),
+            dream_seed: 0,
         }
     }
 }
@@ -63,7 +68,7 @@ impl Plasticity {
 }
 
 /// What one consolidation pass did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PassReport {
     pub windows: u64,
     pub grown: u64,
@@ -73,6 +78,7 @@ pub struct PassReport {
     /// Hidden -> hidden edges grown / pruned this pass.
     pub grown_hidden: u64,
     pub pruned_hidden: u64,
+    pub replay: crate::replay::ReplayReport,
     /// Fire events overwritten in the ring before they could be replayed.
     pub lost_events: u64,
 }
@@ -194,6 +200,8 @@ pub fn consolidate(eng: &mut Engine, t: u64) -> PassReport {
             }
         }
     }
+    // 4. Wayback: reverse replay into W (after growth and pruning).
+    rep.replay = crate::replay::wayback(eng, t);
     rep
 }
 

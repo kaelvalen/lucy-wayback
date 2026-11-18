@@ -19,6 +19,8 @@ pub const STREAM_RESERVOIR: u64 = 2;
 pub const STREAM_DORMANT: u64 = 3;
 /// Observatory probe shuffling (never touches dynamics).
 pub const STREAM_PROBE: u64 = 4;
+/// Wayback dreams (seed cells of spontaneous runs during consolidation).
+pub const STREAM_DREAM: u64 = 5;
 
 pub fn stream(seed: u64, id: u64) -> ChaCha8Rng {
     let mut r = ChaCha8Rng::seed_from_u64(seed);
@@ -195,12 +197,14 @@ pub fn build(cfg: &SeedConfig, p: Params) -> Engine {
         }
     }
     g.fix_gain_norms(0..g.cells.slots.capacity());
-    Engine::new(
+    let mut eng = Engine::new(
         p,
         g,
         Senses::new(cfg.seed, cfg.ticks_per_byte),
         cfg.ring_cap,
-    )
+    );
+    eng.plasticity.dream_seed = cfg.seed;
+    eng
 }
 
 /// Add `n` hidden cells wired only among themselves: never reached by input, so they must cost

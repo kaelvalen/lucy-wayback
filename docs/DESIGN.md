@@ -198,6 +198,13 @@ tie-breaks keep it deterministic (tested).
 | `hidden_grow_lag` | 3 ticks | "B fires at t+1..t+3 after A": one to three hops of delivery plus integration. |
 | `hidden_in_cap` | 16 | ≈ 2× the seed hidden fan-in (≈ 8). |
 | `hidden_grow_stride` | 8 | Cost knob: 1/8 of targets per pass. |
+| `replay_per_pass` | 0 (off) | Wayback segments per pass (most surprising arrivals of the pass). |
+| `replay_bytes` | 4 | Segment length (bytes before the anchor) = dream length. |
+| `eta_w` | 0.01 | W NLMS step through tanh; W norm capped at its birth value. |
+| `replay_gamma` | 0.5 | Per-hop decay of the feedback signal. |
+| `replay_min_delta` | 1e-3 | Feedback RMS below which the chain stops. |
+| `dreams_per_pass` | 32 | Pre-update dreams recorded per pass (dream consistency). |
+| `dream_seeds` | 8 | Hidden cells seeding one dream. |
 | `eta_bias` | 0.01 | Bias-logit cross-entropy step (competitive readout); 0.003–0.03 swept, 0.01 best. |
 | `eta_readout` | 0.3 | Readout Q step: evidence moves by ≈ `eta_readout (y − p) |u|²/(readout_eps + |u|²)` per touch. Separate from hidden `eta_q` (sharing it changed the tissue). Swept 0.03–0.3. |
 | `readout_eps` | 1.0 | Regularizer of the readout normalization. With the hidden-cell `nlms_eps` (1e-3) a weak input took a full step that strong inputs then amplified: own surprise 4.6–6.8 bits (overconfident). 0.3–3 all give 3.4–3.5 bits. |
@@ -281,7 +288,7 @@ near-constant. A unit test also asserts that dormant cells are never touched (`l
 - Per-edge credit vectors (deeper credit assignment).
 - All state behind SoA columns and the `S` alias (cold-tier mmap, quantization).
 
-## Plan (approved in principle; build after the competitive readout is measured): reverse replay ("wayback") with one-hop feedback into W
+## Reverse replay ("wayback") with one-hop feedback into W (`replay.rs`, built; off by default: `replay_per_pass = 0`)
 
 Review changes (required): (a) within each consolidation pass, dreams are generated with the
 **pre-update W** and their transitions recorded *before* any feedback update; after the update,
@@ -369,7 +376,20 @@ with an equal number of *self-generated* ones:
    `η_w = 0` leaves the state hash unchanged; a hand-computed two-hop δ; replay off/on
    determinism.
 
-**Measure before/after (when built):** routing and tissue headlines; the probe ceiling is the
+**As built.** `FireEvent.prev` links each ring fire to the same cell's previous fire (a
+`last_seq` column), so `h⁻` is an O(1) lookup; `w_norm0` holds the birth norm. Anchors are kept
+by `kernel::arrive` (top `replay_per_pass` by `−ln p(true byte)`) and consumed by the pass.
+Dreams run in a sandbox with each cell firing at most once per dream (frozen thresholds would
+otherwise let a loop fire every tick). The clip factor of `clip_rms(u)` is taken as 1 (u is not
+recorded in the ring). Forgetting measure (`--probe-old N`): at each checkpoint a clone of the
+engine with consolidation off (W frozen) re-reads the first N corpus bytes; probe and readout on
+that fixed segment are reported as `old_probe_accuracy` / `old_readout_accuracy`. Tests: a
+hand-computed two-hop replay (W deltas to 2e-6), `eta_w = 0` leaves the state bit-identical to
+replay off, replay on is deterministic. New metrics: `replay_segments`, `replay_lost`,
+`replay_w_updates`, `replay_delta_rms`, `dream_fires`, `dream_updates`, `saturation`,
+`w_norm_ratio`.
+
+**Measure before/after:** routing and tissue headlines; the probe ceiling is the
 direct test, since W shapes what the tissue holds. Also the early-segment probe (forgetting),
 saturation, branching, and theta.
 

@@ -64,6 +64,18 @@ pub struct Params {
     pub hidden_grow_stride: u32,
     /// Cap on a hidden cell's hidden -> hidden in-degree (edges from input cells never compete).
     pub hidden_in_cap: u32,
+    /// Wayback (reverse replay into W): segments per consolidation pass (0 = off), each the
+    /// `replay_bytes` bytes before one of the pass's most surprising arrivals.
+    pub replay_per_pass: u32,
+    pub replay_bytes: u32,
+    /// W step (NLMS through tanh), << eta_q so Q can track the drift.
+    pub eta_w: S,
+    /// Per-hop decay of the feedback signal, and the RMS below which the chain stops.
+    pub replay_gamma: S,
+    pub replay_min_delta: S,
+    /// Dreams per pass (pre-update W, for dream consistency) and seed cells per dream.
+    pub dreams_per_pass: u32,
+    pub dream_seeds: u32,
 }
 
 impl Default for Params {
@@ -95,6 +107,13 @@ impl Default for Params {
             hidden_grow_lag: 3,
             hidden_grow_stride: 8,
             hidden_in_cap: 16,
+            replay_per_pass: 0,
+            replay_bytes: 4,
+            eta_w: 0.01,
+            replay_gamma: 0.5,
+            replay_min_delta: 1e-3,
+            dreams_per_pass: 32,
+            dream_seeds: 8,
         }
     }
 }
@@ -115,6 +134,9 @@ impl Params {
             ("adapt_step", self.adapt_step),
             ("eta_g", self.eta_g),
             ("eta_readout", self.eta_readout),
+            ("eta_w", self.eta_w),
+            ("replay_gamma", self.replay_gamma),
+            ("replay_min_delta", self.replay_min_delta),
             ("alpha_v", self.alpha_v),
         ];
         for (name, x) in positive {
@@ -393,6 +415,28 @@ pub fn readout_error(code: &V, truth: bool, p: S) -> V {
 pub fn readout_step(q: &mut M, e: &V, u: &V, p: &Params) {
     let s = p.eta_readout / (p.readout_eps + norm2(u));
     outer_add(q, e, u, s);
+}
+
+/// Desired change of a tanh cell's pre-activation for a desired change `delta` of its output
+/// `h`: `(1 - h^2) * delta` (elementwise).
+#[inline]
+pub fn pre_activation_delta(h: &V, delta: &V) -> V {
+    std::array::from_fn(|i| (1.0 - h[i] * h[i]) * delta[i])
+}
+
+/// Local W step (wayback): NLMS toward a pre-activation change `g` for the transition from
+/// `h_prev`: `W += eta_w / (nlms_eps + |h_prev|^2) * g h_prev^T`; then W-norm homeostasis caps
+/// the Frobenius norm at its birth value `norm0` (the cell's spectral share never grows).
+pub fn w_step(w: &mut M, g: &V, h_prev: &V, norm0: S, p: &Params) {
+    let s = p.eta_w / (p.nlms_eps + norm2(h_prev));
+    outer_add(w, g, h_prev, s);
+    let n = w.as_flattened().iter().map(|x| x * x).sum::<S>().sqrt();
+    if n > norm0 && n > 0.0 {
+        let k = norm0 / n;
+        for x in w.as_flattened_mut() {
+            *x *= k;
+        }
+    }
 }
 
 /// Bias logit, cross-entropy step for every cell of the sheet: `bias += eta_bias (y - p)`.

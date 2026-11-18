@@ -177,6 +177,12 @@ pub struct Stats {
     pub growth_budget: u64,
     pub edges_grown_hidden: u64,
     pub edges_pruned_hidden: u64,
+    pub replay_segments: u64,
+    pub replay_lost: u64,
+    pub replay_w_updates: u64,
+    pub replay_delta_rms: f64,
+    pub dream_fires: u64,
+    pub dream_updates: u64,
     /// Fires of the current byte's wave by hop depth (branching-ratio estimate).
     pub depth_hist: [u64; 16],
     pub lost_events: u64,
@@ -220,6 +226,12 @@ impl Stats {
         self.edges_pruned += r.pruned;
         self.growth_budget += r.budget;
         self.edges_grown_hidden += r.grown_hidden;
+        self.replay_segments += r.replay.segments;
+        self.replay_lost += r.replay.lost;
+        self.replay_w_updates += r.replay.w_updates;
+        self.replay_delta_rms += r.replay.delta_rms_sum;
+        self.dream_fires += r.replay.dream_fires;
+        self.dream_updates += r.replay.dream_updates;
         self.edges_pruned_hidden += r.pruned_hidden;
         self.lost_events += r.lost_events;
     }
@@ -270,6 +282,12 @@ impl Stats {
         self.edges_pruned = 0;
         self.growth_budget = 0;
         self.edges_grown_hidden = 0;
+        self.replay_segments = 0;
+        self.replay_lost = 0;
+        self.replay_w_updates = 0;
+        self.replay_delta_rms = 0.0;
+        self.dream_fires = 0;
+        self.dream_updates = 0;
         self.edges_pruned_hidden = 0;
         self.depth_hist = [0; 16];
         self.lost_events = 0;
@@ -375,6 +393,18 @@ pub struct Metrics {
     pub edges_grown_hidden: u64,
     pub edges_pruned_hidden: u64,
     pub hidden_in_degree: Option<f64>,
+    /// Wayback in the window: segments replayed (and lost to ring wrap), W updates with the mean
+    /// feedback RMS, dream fires and dream-consistency updates.
+    pub replay_segments: u64,
+    pub replay_lost: u64,
+    pub replay_w_updates: u64,
+    pub replay_delta_rms: Option<f64>,
+    pub dream_fires: u64,
+    pub dream_updates: u64,
+    /// Fraction of reservoir-cell state components with |h| > 0.95 (tanh saturation).
+    pub saturation: Option<f64>,
+    /// Mean Frobenius norm of W over the reservoir sample, relative to birth.
+    pub w_norm_ratio: Option<f64>,
     /// Branching ratio of the current byte's wave: fires at hop d+1 per fire at hop d (d >= 1).
     /// ~ the network's gain on a perturbation; >= 1 sustained = avalanche risk.
     pub branching_ratio: Option<f64>,
@@ -570,6 +600,37 @@ impl Observatory {
             growth_budget: s.growth_budget,
             edges_grown_hidden: s.edges_grown_hidden,
             edges_pruned_hidden: s.edges_pruned_hidden,
+            replay_segments: s.replay_segments,
+            replay_lost: s.replay_lost,
+            replay_w_updates: s.replay_w_updates,
+            replay_delta_rms: ratio(s.replay_delta_rms, s.replay_w_updates),
+            dream_fires: s.dream_fires,
+            dream_updates: s.dream_updates,
+            saturation: (!self.reservoir.is_empty()).then(|| {
+                let sat: usize = self
+                    .reservoir
+                    .iter()
+                    .map(|&c| {
+                        eng.g.cells.h[c as usize]
+                            .iter()
+                            .filter(|x| x.abs() > 0.95)
+                            .count()
+                    })
+                    .sum();
+                sat as f64 / (self.reservoir.len() * crate::num::D) as f64
+            }),
+            w_norm_ratio: (!self.reservoir.is_empty()).then(|| {
+                let cells = &eng.g.cells;
+                self.reservoir
+                    .iter()
+                    .map(|&c| {
+                        let c = c as usize;
+                        let n: f32 = cells.w[c].as_flattened().iter().map(|x| x * x).sum();
+                        (n.sqrt() / cells.w_norm0[c].max(1e-30)) as f64
+                    })
+                    .sum::<f64>()
+                    / self.reservoir.len() as f64
+            }),
             hidden_in_degree: (!self.reservoir.is_empty()).then(|| {
                 self.reservoir
                     .iter()
@@ -679,6 +740,16 @@ pub fn state_hash(eng: &Engine) -> u64 {
     h.u64(pl.passes);
     for v in [&pl.err, &pl.floor, &pl.excess, &pl.carry] {
         h.f32s(v);
+    }
+    for a in &pl.anchors {
+        h.f32s(&[a.surprise]);
+        h.u64(a.t);
+        h.u64(a.seq);
+        h.f32s(&a.toward);
+        for &(c, g) in &a.sources {
+            h.u64(c as u64);
+            h.f32s(&[g]);
+        }
     }
     h.u64(eng.ring.total());
     for ev in eng.ring.iter() {

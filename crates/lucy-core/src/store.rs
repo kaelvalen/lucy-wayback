@@ -144,7 +144,7 @@ pub struct CellInit {
 }
 
 /// Cell columns (struct of arrays), indexed by `Id::idx`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CellStore {
     pub slots: Slots,
     pub kind: Vec<Kind>,
@@ -165,6 +165,10 @@ pub struct CellStore {
     /// Freshest wave integrated since the last fire.
     pub wave: Vec<Wave>,
     pub fire_pending: Vec<bool>,
+    /// Ring sequence number of the cell's latest fire (`buffer::NO_PREV` if none).
+    pub last_seq: Vec<u64>,
+    /// Birth Frobenius norm of W: the cap of W-norm homeostasis (wayback replay).
+    pub w_norm0: Vec<S>,
     pub outs: Vec<Vec<u32>>,
     pub ins: Vec<Vec<u32>>,
     pub credit: Vec<Vec<Credit>>,
@@ -190,6 +194,15 @@ impl CellStore {
         put(&mut self.last_t, i, init.t, fresh);
         put(&mut self.wave, i, Wave::default(), fresh);
         put(&mut self.fire_pending, i, false, fresh);
+        put(&mut self.last_seq, i, crate::buffer::NO_PREV, fresh);
+        let w_norm = init
+            .w
+            .as_flattened()
+            .iter()
+            .map(|x| x * x)
+            .sum::<S>()
+            .sqrt();
+        put(&mut self.w_norm0, i, w_norm, fresh);
         put(&mut self.outs, i, Vec::new(), fresh);
         put(&mut self.ins, i, Vec::new(), fresh);
         put(&mut self.credit, i, Vec::new(), fresh);
@@ -224,7 +237,7 @@ impl CellStore {
 }
 
 /// Edge columns, indexed by `Id::idx`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct EdgeStore {
     pub slots: Slots,
     pub src: Vec<u32>,
@@ -234,7 +247,7 @@ pub struct EdgeStore {
     pub last_t: Vec<u64>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Graph {
     pub cells: CellStore,
     pub edges: EdgeStore,

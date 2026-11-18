@@ -128,6 +128,10 @@ struct RunArgs {
     /// Most recent byte windows each probe trains/tests on (80/20 temporal split).
     #[arg(long, default_value_t = 200_000)]
     probe_samples: usize,
+    /// Forgetting measure at each checkpoint: re-read the first N corpus bytes through a frozen
+    /// clone and probe them (0 = off).
+    #[arg(long, default_value_t = 0)]
+    probe_old: usize,
 }
 
 struct Setup {
@@ -151,6 +155,7 @@ impl RunArgs {
             ("--metrics-every", self.metrics_every.to_string()),
             ("--probe-every", self.probe_every.to_string()),
             ("--probe-samples", self.probe_samples.to_string()),
+            ("--probe-old", self.probe_old.to_string()),
         ] {
             v.push(flag.to_string());
             v.push(val);
@@ -249,6 +254,7 @@ fn simulate(
             dir,
             dump,
             snapshots,
+            old: s.corpus[..a.probe_old.min(s.corpus.len())].to_vec(),
         };
         obs.prober = Some(Prober::new(cfg, s.corpus.clone(), s.cfg.ticks_per_byte));
     }
