@@ -6,7 +6,6 @@
 use rand::Rng;
 
 use crate::num::{S, V};
-use crate::rules::{self, Params};
 use crate::seed::{STREAM_CODES, stream};
 
 pub const N_BYTES: usize = 256;
@@ -15,11 +14,11 @@ pub struct Senses {
     /// Seed-derived code per byte, entries in {-1, +1} (inside the tanh range of cell states).
     pub codes: Vec<V>,
     pub ticks_per_byte: u64,
-    /// Per-input-cell prior expectation (score bias), valid as of byte number `bias_seen`.
+    /// Per-input-cell bias logit (a cold cell's whole score).
     pub bias: Vec<S>,
-    pub bias_seen: Vec<u64>,
-    /// Reused readout buffer: one score per input cell.
+    /// Reused readout buffers: one score (logit) and one softmax probability per input cell.
     pub scores: Vec<S>,
+    pub probs: Vec<S>,
     hot: Vec<u32>,
     is_hot: Vec<bool>,
 }
@@ -34,8 +33,8 @@ impl Senses {
             codes,
             ticks_per_byte,
             bias: vec![0.0; N_BYTES],
-            bias_seen: vec![0; N_BYTES],
             scores: vec![0.0; N_BYTES],
+            probs: vec![0.0; N_BYTES],
             hot: Vec::new(),
             is_hot: vec![false; N_BYTES],
         }
@@ -47,17 +46,6 @@ impl Senses {
             self.is_hot[c] = true;
             self.hot.push(c as u32);
         }
-    }
-
-    /// Prior of input cell `c` just before byte number `n` (lazy cold-byte decay applied).
-    pub fn prior(&self, c: usize, n: u64, p: &Params) -> S {
-        rules::bias_idle(self.bias[c], n - self.bias_seen[c], p)
-    }
-
-    /// Teach the prior of a touched cell at byte number `n` from its score error.
-    pub fn learn_prior(&mut self, c: usize, n: u64, truth: bool, score: S, p: &Params) {
-        self.bias[c] = rules::bias_step(self.prior(c, n, p), truth, score, p);
-        self.bias_seen[c] = n + 1;
     }
 
     /// Hot input cells of the window just closed (insertion order); clears the set. O(hot).
@@ -107,14 +95,5 @@ mod tests {
     fn guess_picks_highest_lowest_on_tie() {
         assert_eq!(guess(&[0.0; 4]), 0);
         assert_eq!(guess(&[0.1, 0.5, 0.5, -1.0]), 1);
-    }
-
-    #[test]
-    fn prior_is_lazy_and_learns() {
-        let p = Params::default();
-        let mut s = Senses::new(0, 8);
-        s.learn_prior(3, 0, true, 0.0, &p);
-        assert!((s.bias[3] - 0.005).abs() < 1e-9);
-        assert!((s.prior(3, 11, &p) - 0.005 * 0.995f32.powi(10)).abs() < 1e-9);
     }
 }

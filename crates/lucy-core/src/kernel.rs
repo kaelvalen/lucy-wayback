@@ -4,7 +4,7 @@
 use std::io;
 
 use crate::buffer::{FireEvent, Ring};
-use crate::num::{D, M, S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
+use crate::num::{M, S, V, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale};
 use crate::observe::{Observatory, Stats};
 use crate::rules::{self, Params, Scalars};
 use crate::scheduler::{Payload, Scheduler};
@@ -354,13 +354,10 @@ impl Engine {
         for &c in &touched {
             self.touch(c as usize, t);
         }
-        // Readout: every input cell scores "my byte comes next". A cold cell (u = 0) scores
-        // exactly its prior; a hot one adds dot(Q u, code) / D.
-        let n = self.stats.bytes_total;
+        // Readout: every input cell scores a logit for "my byte comes next". A cold cell (u = 0)
+        // scores exactly its bias; a hot one adds dot(Q u, code) / D.
         let mut scores = std::mem::take(&mut self.senses.scores);
-        for (c, x) in scores.iter_mut().enumerate() {
-            *x = self.senses.prior(c, n, &self.p);
-        }
+        scores.copy_from_slice(&self.senses.bias);
         let preds: Vec<(usize, V)> = touched
             .iter()
             .map(|&c| {
@@ -373,24 +370,26 @@ impl Engine {
             })
             .collect();
         let guess = senses::guess(&scores);
-        self.stats.on_byte(guess == b as u32, &scores, b);
+        // Competitive readout (lateral inhibition across the sheet): p = softmax(scores).
+        let mut probs = std::mem::take(&mut self.senses.probs);
+        rules::softmax(&scores, &mut probs);
+        self.stats.on_byte(guess == b as u32, &scores, probs[b], b);
 
-        // Reality teaches every touched cell: pred -> code_b (true byte) or 0 (hot wrong byte).
-        // Cold wrong cells need no work: Q u = 0 already, their prior decays lazily.
-        for (c, pred) in preds {
+        // Reality teaches with the softmax error y - p: the true cell up, each hot wrong cell
+        // down by its probability. Q and in-gains only move for touched cells (a cold cell has
+        // u = 0, so its Q and in-gain gradients are exactly 0); every bias takes y - p.
+        for (c, _pred) in preds {
             let truth = c == b;
-            let target = if truth { self.senses.codes[b] } else { ZERO };
-            let e = sub(&target, &pred);
+            let e = rules::readout_error(&self.senses.codes[c], truth, probs[c]);
             let cells = &mut self.g.cells;
             cells.tau[c] = rules::ema(cells.tau[c], norm2(&e), self.p.alpha_tau);
             // Input credit: move inputs so the cell's own readout gets closer to reality.
             let toward = matvec_t(&cells.q[c], &e);
             let u = cells.u[c];
-            rules::nlms(&mut cells.q[c], &e, &u, &self.p);
+            rules::readout_step(&mut cells.q[c], &e, &u, &self.p);
             self.learn_in_gains(c, &toward);
             if truth {
-                self.plasticity
-                    .observe_error(b, norm2(&e) / D as S, &self.p);
+                self.plasticity.observe_error(b, 1.0 - probs[b], &self.p);
                 // In-edges that fed the cell whose byte really arrived earn vitality.
                 let Graph { cells, edges } = &mut self.g;
                 for cr in &cells.credit[c] {
@@ -402,10 +401,13 @@ impl Engine {
                     }
                 }
             }
-            self.senses.learn_prior(c, n, truth, scores[c], &self.p);
             self.g.cells.clear_input(c);
         }
+        for (c, (bias, &pc)) in self.senses.bias.iter_mut().zip(&probs).enumerate() {
+            *bias = rules::bias_step(*bias, c == b, pc, &self.p);
+        }
         self.senses.scores = scores;
+        self.senses.probs = probs;
 
         let cells = &mut self.g.cells;
         cells.h_prev[b] = cells.h[b];
@@ -425,7 +427,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::num::{D, ZERO_M, basis};
+    use crate::num::{D, ZERO, ZERO_M, basis, sub};
     use crate::observe::{Observatory, state_hash};
     use crate::scheduler::Phase;
     use crate::seed::{self, SeedConfig};
@@ -516,27 +518,31 @@ mod tests {
         assert!((g[0] - 0.4998046).abs() < 1e-6, "{}", g[0]);
         assert!((g[1] - 0.5001953).abs() < 1e-6, "{}", g[1]);
 
-        // Byte A: every score is 0 -> guess byte 0 (wrong), 8 bits. A learns: prior 0 -> 0.005.
-        // Byte B: scores = priors (A 0.005, rest 0; Q_B = 0 so B's trace adds nothing yet)
-        // -> guess A (wrong). Calibrated surprise with the initial beta = 1:
-        // log-domain logits, A = ln 0.005 vs floor ln 1e-4 (ratio 50): log2(50 + 255) = 8.252665
-        // bits (byte A: all scores equal -> 8 bits).
+        // Byte A: every logit is 0 -> uniform softmax, guess byte 0 (wrong), 8 bits. All biases
+        // step by eta (y - 1/256): A up to eta*255/256, every other one down to -eta/256.
+        // Byte B: logits = biases (Q_B = 0, so B's trace adds nothing yet) -> guess A (wrong),
+        // p_B = e^(-eta/256) / (e^(eta*255/256) + 255 e^(-eta/256)) = 1 / (255 + e^eta).
+        let eta = eng.p.eta_bias;
+        let p_b = 1.0 / (255.0 + eta.exp());
         assert_eq!((eng.stats.bytes_total, eng.stats.correct), (2, 0));
-        let s_b = eng.stats.surprise_sum - 8.0;
-        assert!((s_b - 8.252665).abs() < 1e-5, "{s_b}");
-        let (pa, pb) = (
-            eng.senses.prior(A as usize, 2, &eng.p),
-            eng.senses.prior(B as usize, 2, &eng.p),
+        let s_b = eng.stats.readout_bits_sum - 8.0;
+        assert!((s_b + (p_b as f64).log2()).abs() < 1e-4, "{s_b}");
+        let p_a = eta.exp() * p_b;
+        let (ba, bb) = (eng.senses.bias[A as usize], eng.senses.bias[B as usize]);
+        assert!(
+            (ba - (eta * 255.0 / 256.0 - eta * p_a)).abs() < 1e-7,
+            "{ba}"
         );
         assert!(
-            (pa - 0.005 * 0.995).abs() < 1e-9 && (pb - 0.005).abs() < 1e-9,
-            "{pa} {pb}"
+            (bb - (-eta / 256.0 + eta * (1.0 - p_b))).abs() < 1e-7,
+            "{bb}"
         );
-        // B's readout error: pred = 0, e = code_B = e1 -> tau = 0.05. NLMS on u_B =
-        // tanh(0.5) e^(-6/4) e0 = 0.103114 e0: Q_B[1][0] = 0.1 / (1e-3 + 0.0106325) * 0.103114.
-        assert!((eng.g.cells.tau[B as usize] - 0.05).abs() < 1e-7);
+        // B's readout error: e = (1 - p_B) code_B = (1 - p_B) e1 -> tau = 0.05 (1 - p_B)^2.
+        // Readout step on u_B = tanh(0.5) e^(-6/4) e0 = 0.103114 e0 (|u|^2 = 0.0106325):
+        // Q_B[1][0] = 0.3 / (1 + 0.0106325) * 0.103114 * (1 - p_B) = 0.0306087 (1 - p_B).
+        assert!((eng.g.cells.tau[B as usize] - 0.05 * (1.0 - p_b).powi(2)).abs() < 1e-7);
         let q = eng.g.cells.q[B as usize][1][0];
-        assert!((q - 0.88643).abs() < 1e-4, "{q}");
+        assert!((q - 0.0306087 * (1.0 - p_b)).abs() < 1e-6, "{q}");
         assert_eq!(g[2], 1.0, "toward = Q_B^T e = 0: gain unchanged");
         assert_eq!(
             eng.g.cells.heat[B as usize], 0.0,

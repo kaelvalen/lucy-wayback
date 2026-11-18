@@ -21,8 +21,8 @@ pub const RESERVOIR: usize = 1024;
 /// Online fit of the softmax inverse temperature `beta = 1 / tau` that turns readout scores into
 /// a calibrated next-byte distribution. Observatory only: the dynamics never read it.
 ///
-/// Scores are probability-like (LMS toward 1/0), so they enter in the log domain:
-/// `p = softmax(beta * x)`, `x = ln(max(score, SCORE_FLOOR))`. Each byte is scored with the
+/// Scores are logits (the competitive readout), so `p = softmax(beta * score)`; beta = 1 is
+/// Lucy's own distribution (`readout_bits`). Each byte is scored with the
 /// current beta first (prequential, so the reported surprise is honest), then beta takes a damped
 /// stochastic Newton step on the log-loss: `dL/dbeta = E_p[x] - x_true`,
 /// `d2L/dbeta2 = Var_p[x]` (running mean).
@@ -34,8 +34,6 @@ pub struct Calibrator {
 
 /// Step and averaging rate of the calibrator: ~100 bytes of memory.
 const CALIBRATION_RATE: f64 = 0.01;
-/// Scores at or below this count as "no evidence" (well below a uniform 1/256).
-const SCORE_FLOOR: f64 = 1e-4;
 
 impl Default for Calibrator {
     fn default() -> Self {
@@ -47,13 +45,9 @@ impl Default for Calibrator {
 }
 
 impl Calibrator {
-    /// Surprise in bits of `truth` under `softmax(beta * ln(max(scores, floor)))`, then update beta.
+    /// Surprise in bits of `truth` under `softmax(beta * scores)`, then update beta.
     pub fn observe(&mut self, scores: &[S], truth: usize) -> f64 {
-        // Centered on the floor, so equal scores give exactly equal x (no rounding-noise variance).
-        let x: Vec<f64> = scores
-            .iter()
-            .map(|&s| (s as f64).max(SCORE_FLOOR).ln() - SCORE_FLOOR.ln())
-            .collect();
+        let x: Vec<f64> = scores.iter().map(|&s| s as f64).collect();
         let logits: Vec<f64> = x.iter().map(|&x| self.beta * x).collect();
         let mx = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let w: Vec<f64> = logits.iter().map(|l| (l - mx).exp()).collect();
@@ -167,6 +161,8 @@ pub struct Stats {
     pub bytes: u64,
     pub correct: u64,
     pub surprise_sum: f64,
+    /// -log2 of Lucy's own softmax probability of the true byte, summed over the window.
+    pub readout_bits_sum: f64,
     pub calibrator: Calibrator,
     pub baselines: Baselines,
     pub depth_sum: u64,
@@ -241,8 +237,9 @@ impl Stats {
 
     /// A byte arrived: close the previous inter-byte window (hop depth), score the guess, and
     /// measure calibrated surprise from the 256 readout scores.
-    pub fn on_byte(&mut self, correct: bool, scores: &[S], truth: usize) {
+    pub fn on_byte(&mut self, correct: bool, scores: &[S], p_truth: S, truth: usize) {
         let surprise = self.calibrator.observe(scores, truth);
+        self.readout_bits_sum -= (p_truth.max(1e-30) as f64).log2();
         self.baselines.observe(truth as u8);
         if self.bytes_total > 0 {
             self.depth_sum += self.byte_depth as u64;
@@ -263,6 +260,7 @@ impl Stats {
         self.bytes = 0;
         self.correct = 0;
         self.surprise_sum = 0.0;
+        self.readout_bits_sum = 0.0;
         self.baselines.reset_window();
         self.depth_sum = 0;
         self.depth_windows = 0;
@@ -350,6 +348,8 @@ pub struct Metrics {
     pub accuracy: Option<f64>,
     /// Mean -log2 softmax(score / tau)[true byte] over bytes in the window, tau fitted online.
     pub surprise_bits: Option<f64>,
+    /// Lucy's own surprise: mean -log2 p(true byte) under the competitive readout (no fitting).
+    pub readout_bits: Option<f64>,
     /// Calibrated softmax temperature at the end of the window.
     pub surprise_temperature: Option<f64>,
     /// Online count baselines on the same windows: [unigram, bigram, trigram].
@@ -555,6 +555,7 @@ impl Observatory {
             hidden_fires_in_window: s.hidden_fires,
             accuracy: ratio(s.correct as f64, s.bytes),
             surprise_bits: ratio(s.surprise_sum, s.bytes),
+            readout_bits: ratio(s.readout_bits_sum, s.bytes),
             surprise_temperature: (s.calibrator.beta > 0.0).then(|| 1.0 / s.calibrator.beta),
             baseline_accuracy: (s.bytes > 0)
                 .then(|| s.baselines.correct.map(|c| c as f64 / s.bytes as f64)),
@@ -673,9 +674,6 @@ pub fn state_hash(eng: &Engine) -> u64 {
         h.u64(e.last_t[i]);
     }
     h.f32s(&eng.senses.bias);
-    for &n in &eng.senses.bias_seen {
-        h.u64(n);
-    }
     let pl = &eng.plasticity;
     h.u64(pl.next_seq);
     h.u64(pl.passes);
@@ -796,7 +794,7 @@ mod tests {
     fn calibrator_uniform_and_fit() {
         let mut c = Calibrator::default();
         assert_eq!(c.observe(&[0.0; 256], 7), 8.0);
-        // 4 classes; the readout marks one with score 1, the rest score 1/e (log gap exactly 1).
+        // 4 classes; the readout marks one with logit 1, the rest logit 0 (gap exactly 1).
         // It is right half the time, otherwise the truth is one of the other 3.
         // Log-loss optimum: e^beta / (e^beta + 3) = 1/2 -> beta = ln 3.
         let mut c = Calibrator::default();
@@ -807,7 +805,7 @@ mod tests {
             } else {
                 (marked + 1 + (i / 2) % 3) % 4
             };
-            let mut s = [(-1.0f32).exp(); 4];
+            let mut s = [0.0f32; 4];
             s[marked] = 1.0;
             c.observe(&s, truth);
         }
@@ -829,7 +827,7 @@ mod tests {
         s.on_fire(3, 1);
         s.on_fire(4, 2);
         assert_eq!((s.fired.clone(), s.max_tick_fires), (vec![3, 4], 2));
-        s.on_byte(false, &[0.0; 4], 0);
+        s.on_byte(false, &[0.0; 4], 0.25, 0);
         s.on_hidden_fire(
             1.0,
             Wave {
@@ -844,7 +842,7 @@ mod tests {
                 depth: 9,
             },
         ); // no ancestry: reverberation
-        s.on_byte(true, &[0.0; 4], 0);
+        s.on_byte(true, &[0.0; 4], 0.25, 0);
         assert_eq!(
             (s.depth_sum, s.depth_windows, s.correct, s.reverb_fires),
             (3, 1, 1, 1)

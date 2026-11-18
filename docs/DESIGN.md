@@ -99,22 +99,31 @@ ring.push(cell, t, quantize(h))
 **Byte arrival** (byte number `n`, value `b`, at `t`). Learning is O(hot); the readout is a
 fixed 256-wide scan (sensory surface size, independent of N):
 
-1. Readout. Every input cell `c` scores "my byte comes next":
-   `pred_c = Q_c u_c`, `score_c = prior_c + dot(pred_c, code_c) / D` (1 = mine, 0 = not mine).
-   A cold cell has `u = 0`, so it scores exactly its prior. Guess = argmax score (ties → lowest
-   byte); surprise from the scores (see Observatory).
-2. Reality teaches every touched cell (hot cells and `b`): target `code_b` for `b`, `0` for hot
-   wrong cells; `e = target - pred`;
-   - `Q_c += eta_q / (nlms_eps + |u_c|^2) * e u_c^T` (normalized LMS, the hidden-cell rule);
-   - in-gains: `toward = Q_c^T e` (the readout error mapped into the cell's input space), then
-     `gain_i += eta_g * dot(toward, m_i) / D` and synaptic scaling;
-   - `prior_c += eta_bias * (1[c = b] - score_c)`; `tau = ema(tau, |e|^2)`; clear the window.
-   Cold wrong cells need no work: `Q u = 0` already, and their prior update (target 0, score =
-   prior) is `prior *= 1 - eta_bias` per byte, applied lazily in closed form on next use.
-   The priors therefore converge to byte frequencies (tested).
+1. Readout (**competitive**, lateral inhibition across the sheet). Every input cell `c` scores
+   a logit for "my byte comes next": `pred_c = Q_c u_c`,
+   `score_c = bias_c + dot(pred_c, code_c) / D`. A cold cell has `u = 0`, so it scores exactly
+   its bias. `p = softmax(score)` over all 256 cells; guess = argmax (ties → lowest byte);
+   Lucy's own surprise is `−log2 p_b` (`readout_bits`).
+2. Reality teaches with the softmax (cross-entropy) error `y_c − p_c`, `y_c = 1[c = b]`: the true
+   cell up, each hot wrong cell down by its probability. For touched cells (hot ∪ {b}),
+   `e = (y_c − p_c) code_c` is the vector error of the readout:
+   - `Q_c += eta_readout / (readout_eps + |u_c|^2) * e u_c^T` (regularized NLMS): moves the
+     cell's evidence `dot(Q u, code)/D` by `eta_readout (y − p) |u|²/(readout_eps + |u|²)`, a
+     cross-entropy gradient step;
+   - in-gains: `toward = Q_c^T e`, then `gain_i += eta_g * dot(toward, m_i) / D` and synaptic
+     scaling; `tau = ema(tau, |e|^2)`; clear the window.
+   Every bias takes `bias_c += eta_bias (y_c − p_c)`, cold cells included: their Q and in-gain
+   gradients are exactly 0 (`u = 0`), but the bias gradient is `−p_c`, and without it a byte
+   whose cell is never hot would raise its bias at every occurrence and never be pushed down
+   (it would end up winning every guess). The biases converge to log-frequencies (tested).
+   Cost: O(hot) for Q, gains and credit; one 256-wide softmax and bias pass per byte, the same
+   fixed sensory-sheet scan the old readout already made for its priors. (The review asked for
+   cold cells via an O(1) running sum of `exp(bias)`; with cold biases learning every byte that
+   sum is no longer O(1)-maintainable, and 256 exps cost ≈ 1 µs per byte, < 2 % of a byte's
+   work.) Replaces the regression-to-code rule (`pred → code_b`, priors by LMS).
 3. Force `b` to fire: `h_prev = h; h = code_b`; fire bookkeeping; send to out-edges at `t + 1`.
 
-Decision 4 (amended): input cells have Q (their readout), still no W. Priors live in `Senses`.
+Decision 4 (amended): input cells have Q (their readout), still no W. Bias logits live in `Senses`.
 
 ## Structural plasticity (`plasticity.rs`)
 
@@ -189,7 +198,9 @@ tie-breaks keep it deterministic (tested).
 | `hidden_grow_lag` | 3 ticks | "B fires at t+1..t+3 after A": one to three hops of delivery plus integration. |
 | `hidden_in_cap` | 16 | ≈ 2× the seed hidden fan-in (≈ 8). |
 | `hidden_grow_stride` | 8 | Cost knob: 1/8 of targets per pass. |
-| `eta_bias` | 0.005 | Prior LMS step: averages byte frequency over ~200 bytes, so frequent bytes are tracked within a few utterances while one-off bytes barely move it. |
+| `eta_bias` | 0.01 | Bias-logit cross-entropy step (competitive readout); 0.003–0.03 swept, 0.01 best. |
+| `eta_readout` | 0.3 | Readout Q step: evidence moves by ≈ `eta_readout (y − p) |u|²/(readout_eps + |u|²)` per touch. Separate from hidden `eta_q` (sharing it changed the tissue). Swept 0.03–0.3. |
+| `readout_eps` | 1.0 | Regularizer of the readout normalization. With the hidden-cell `nlms_eps` (1e-3) a weak input took a full step that strong inputs then amplified: own surprise 4.6–6.8 bits (overconfident). 0.3–3 all give 3.4–3.5 bits. |
 
 Seed constants (`SeedConfig`, CLI flags): 4096 hidden, fanout 8 (hidden→hidden, distinct, no
 self-loops), 16 input→hidden per input, 16 hidden→input per input (prediction pathway), gains
@@ -270,14 +281,20 @@ near-constant. A unit test also asserts that dormant cells are never touched (`l
 - Per-edge credit vectors (deeper credit assignment).
 - All state behind SoA columns and the `S` alias (cold-tier mmap, quantization).
 
-## Plan for review (not built): reverse replay ("wayback") with one-hop feedback into W
+## Plan (approved in principle; build after the competitive readout is measured): reverse replay ("wayback") with one-hop feedback into W
+
+Review changes (required): (a) within each consolidation pass, dreams are generated with the
+**pre-update W** and their transitions recorded *before* any feedback update; after the update,
+W is pulled toward reproducing those recorded pre-update transitions (pulling toward dreams
+generated after the update would protect nothing). (b) Replay anchors are ranked by the
+competitive readout's own surprise `−log p(true byte)`. Success metric: tissue (full probe
+ceiling) rises above 44.5 % while the forgetting measure stays flat.
 
 Goal: make W learn (open finding 1) from reality, offline, without global passes, using only
 what one cell can see. It runs inside consolidation, after growth and pruning.
 
-**1. What is replayed.** Ring segments that *end in a high-tension event*. Anchors are byte
-arrivals whose input cell missed: the per-arrival miss `x_b = |code_b − pred_b|²/D` exceeds the
-cell's floor (A's growth-law state) by the largest margin. During each pass the kernel keeps the
+**1. What is replayed.** Ring segments that *end in a high-tension event*. Anchors are the byte
+arrivals with the largest competitive-readout surprise `−log p(true byte)`. During each pass the kernel keeps the
 top `replay_per_pass` (≈ 32) anchors in a bounded heap: O(log R) per arrival. Each anchor also
 keeps its ring sequence number and the readout error vector `e_b`. A segment is the ring
 events in `[t_a − replay_bytes·K, t_a]` (≈ 4 bytes = 32 ticks ≈ 650 fires). The ring holds
@@ -467,6 +484,9 @@ test bytes at each 100 k checkpoint (probe = last 200 k windows).
 - **It improves both watch items.** Reverb falls from 34 % to 19 %, and theta rises from 0.069 to
   0.124. Edges that follow existing sequences make waves more byte-locked, so less activity
   sustains itself.
+- **Kept, default off; noted as a tissue-health improvement** (reverb 34 % → 19 %, theta 0.069 →
+  0.124 at 256/pass): a candidate to switch on together with C, where W learning may need the
+  calmer, more byte-locked reservoir.
 - **Reading.** "Fires after A more often than chance" mostly duplicates what the existing
   dynamics already do. It sharpens the trajectories it copies, but adds no new next-byte
   information. Information has to come from a teacher signal, which motivates plan C:

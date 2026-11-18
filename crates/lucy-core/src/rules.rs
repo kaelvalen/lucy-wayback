@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::num::{D, M, S, V, axpy, dot, matvec, norm2, outer_add, sub};
+use crate::num::{D, M, S, V, axpy, dot, matvec, norm2, outer_add, scale, sub};
 
 /// All tunable constants. Timescales are in ticks; step sizes are dimensionless.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -33,8 +33,13 @@ pub struct Params {
     pub alpha_tau: S,
     /// Vitality added per use (cell fire / edge transmit).
     pub alpha_v: S,
-    /// LMS step of each input cell's prior (bias); also its per-byte decay when the cell is cold.
+    /// Cross-entropy step of each input cell's bias logit (competitive readout).
     pub eta_bias: S,
+    /// Competitive readout step on input cells' Q, normalized by `readout_eps + |u|^2`: plain
+    /// logistic SGD for weak inputs, normalized for strong ones (a tiny regularizer lets a
+    /// weak input take a full step that strong inputs then amplify into huge logits).
+    pub eta_readout: S,
+    pub readout_eps: S,
     /// Structural plasticity: consolidate (replay, grow, prune) every this many bytes; 0 = off.
     pub consolidate_every: u32,
     /// Growth law: edges an input cell may grow per unit of accumulated tension excess
@@ -76,7 +81,9 @@ impl Default for Params {
             eta_g: 0.05,
             alpha_tau: 0.05,
             alpha_v: 1.0,
-            eta_bias: 0.005,
+            eta_bias: 0.01,
+            eta_readout: 0.3,
+            readout_eps: 1.0,
             consolidate_every: 1000,
             grow_per_tension: 1.0,
             alpha_err: 0.03,
@@ -101,11 +108,13 @@ impl Params {
             ("t_adapt", self.t_adapt),
             ("target_rate", self.target_rate),
             ("nlms_eps", self.nlms_eps),
+            ("readout_eps", self.readout_eps),
         ];
         let non_negative = [
             ("eta_theta", self.eta_theta),
             ("adapt_step", self.adapt_step),
             ("eta_g", self.eta_g),
+            ("eta_readout", self.eta_readout),
             ("alpha_v", self.alpha_v),
         ];
         for (name, x) in positive {
@@ -356,21 +365,40 @@ pub fn readout(q: &M, u: &V, code: &V, prior: S) -> (V, S) {
     (pred, score)
 }
 
-/// Prior (bias) LMS on the score error: `prior += eta_bias * (target - score)`, target 1 or 0.
-#[inline]
-pub fn bias_step(prior: S, truth: bool, score: S, p: &Params) -> S {
-    prior + p.eta_bias * (S::from(u8::from(truth)) - score)
+/// Competitive readout: `p = softmax(scores)` over the whole sensory sheet (max-subtracted,
+/// fixed summation order).
+pub fn softmax(scores: &[S], out: &mut [S]) {
+    let mx = scores.iter().copied().fold(S::NEG_INFINITY, S::max);
+    let mut z = 0.0;
+    for (o, &s) in out.iter_mut().zip(scores) {
+        *o = (s - mx).exp();
+        z += *o;
+    }
+    for o in out.iter_mut() {
+        *o /= z;
+    }
 }
 
-/// A cold input cell scores exactly its prior and its target is 0, so each byte it sits out is
-/// `bias *= 1 - eta_bias`: applied lazily in closed form, keeping learning O(hot).
+/// Softmax error of an input cell as a vector error for its readout: `e = (y - p) code`.
+/// NLMS on Q with this e moves the cell's evidence `dot(Q u, code) / D` by ~`eta_q (y - p)`,
+/// the cross-entropy gradient; `Q^T e` is the direction its input should move (in-gain credit).
 #[inline]
-pub fn bias_idle(bias: S, bytes: u64, p: &Params) -> S {
-    if bytes == 0 {
-        bias
-    } else {
-        bias * (1.0 - p.eta_bias).powf(bytes as S)
-    }
+pub fn readout_error(code: &V, truth: bool, p: S) -> V {
+    let mut e = *code;
+    scale(&mut e, S::from(u8::from(truth)) - p);
+    e
+}
+
+/// Readout step on an input cell's Q: `Q += eta_readout / (readout_eps + |u|^2) * e u^T`.
+pub fn readout_step(q: &mut M, e: &V, u: &V, p: &Params) {
+    let s = p.eta_readout / (p.readout_eps + norm2(u));
+    outer_add(q, e, u, s);
+}
+
+/// Bias logit, cross-entropy step for every cell of the sheet: `bias += eta_bias (y - p)`.
+#[inline]
+pub fn bias_step(bias: S, truth: bool, p: S, params: &Params) -> S {
+    bias + params.eta_bias * (S::from(u8::from(truth)) - p)
 }
 
 #[inline]
@@ -572,16 +600,11 @@ mod tests {
         assert!(close(s, 0.25 + 1.0 / 32.0, 1e-7));
         assert!(close(
             bias_step(0.2, true, 0.6, &p),
-            0.2 + 0.005 * 0.4,
+            0.2 + p.eta_bias * 0.4,
             1e-7
         ));
-        // Lazy idle decay == k explicit cold updates (score = prior, target 0).
-        let mut b = 0.3;
-        for _ in 0..7 {
-            b = bias_step(b, false, b, &p);
-        }
-        assert!(close(bias_idle(0.3, 7, &p), b, 1e-6));
-        assert_eq!(bias_idle(0.3, 0, &p), 0.3);
+        let e = readout_error(&[1.0; D], false, 0.25);
+        assert!(e.iter().all(|&x| x == -0.25));
     }
 
     /// A stream of i.i.d. bytes: priors converge to byte frequencies (frequency is learnable).
@@ -591,13 +614,21 @@ mod tests {
             eta_bias: 0.01,
             ..Params::default()
         };
-        let (mut a, mut b) = (0.0, 0.0);
-        for i in 0..5000 {
-            let is_a = i % 4 != 0; // a: 75 %, b: 25 %
-            a = bias_step(a, is_a, a, &p);
-            b = bias_step(b, !is_a, b, &p);
+        // Softmax biases converge to log-frequencies (up to a shared offset).
+        let (mut bias, mut pr) = ([0.0; 3], [0.0; 3]);
+        for i in 0..20_000 {
+            let y = [i % 4 != 0, i % 4 == 0, false]; // 75 %, 25 %, never
+            softmax(&bias, &mut pr);
+            for k in 0..3 {
+                bias[k] = bias_step(bias[k], y[k], pr[k], &p);
+            }
         }
-        assert!(close(a, 0.75, 0.05) && close(b, 0.25, 0.05), "{a} {b}");
+        softmax(&bias, &mut pr);
+        assert!(
+            close(pr[0], 0.75, 0.03) && close(pr[1], 0.25, 0.03),
+            "{pr:?}"
+        );
+        assert!(pr[2] < 0.01, "{pr:?}");
     }
 
     #[test]
