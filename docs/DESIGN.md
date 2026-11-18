@@ -623,6 +623,55 @@ Means over 10 checkpoints (`scripts/compare.py`); bigram on the same test bytes 
     points and hot inputs per byte 12.4 → 10.6, gives noisier input traces.
 - Saturation stays at 2.6–3.5 % (alarm: 10 %).
 
+### Is the bigram path a timing problem? (`070721c`, `0a0b1fc`), CHILDES 1 MiB, cap 128
+
+Path diagnostics, means of the last 5 checkpoints (T_in = 8; T_in = 16 is the same within 0.01):
+
+| | seed 7 | seed 11 |
+|---|---|---|
+| time-resolved edge probe, k = 1 … 8 ticks before the byte | 25, 33, 35, 36, 36, 37, 38, 32 % | 26, 32, 35, 36, 38, 38, 39, 29 % |
+| bigram-path probe (only the previous byte's direct targets) | 40.5 % | 42.2 % |
+| bigram (same test bytes) | 41.2 % | 41.2 % |
+| share of the true cell's hidden in-edges on the bigram path | 3.0 % | 3.1 % |
+| bigram-path fires per byte (of 16 direct targets) | 2.5 | 2.7 |
+
+At 30 k bytes (cap 32, T_in = 4) the audit found bigram-path fires 6.9 ticks before the guess.
+Their heat fell from 0.74 at arrival to 0.17 at the guess, so decay was real.
+
+Input-cell trace timescale `t_heat_input`, means of 10 checkpoints:
+
+| T_in | routing s7 / s11 | edge-restricted s7 / s11 | own surprise s7 / s11 |
+|---|---|---|---|
+| 4 (= t_heat) | 38.5 / 35.8 % | 39.9 / 40.1 % | 3.42 / 3.43 |
+| 8 (= K) | 38.1 / 36.0 % | 39.8 / 40.1 % | 3.30 / 3.56 |
+| 16 (= 2K) | 36.5 / 35.9 % | 39.8 / 40.1 % | 3.58 / 3.63 |
+
+- **The representation is fine.** The previous byte's direct targets alone carry the bigram:
+  40.5–42.2 %, about the bigram itself.
+- **Decay is real, but fixing it does not help.** A longer input trace keeps more heat to the
+  guess (all edges: 0.43 → 0.54 of 0.72 arrival heat per byte at T_in 8 → 16). Routing and the
+  edge-restricted ceiling do not move. `t_heat_input` stays at 4.
+- **The limit is the wiring.** Only 3 % of the true cell's in-edges come from the previous byte's
+  direct targets, and about 2.5 of those 16 cells fire per byte. Growth ranks candidates by
+  *excess* co-occurrence `N − f_h n_b / W`. That favours often-firing cells with a small lift
+  over the sparse, byte-specific bigram-path cells. The edge-restricted ceiling (≈ 40 %) is just
+  under the bigram.
+
+### Step 3 combinations (`d0301ab`, readout consolidation on surprise-ranked segments), cap 128
+
+| run | routing s7 / s11 | edge s7 / s11 | tissue s7 / s11 | own surprise | forgetting s7 | reservoir theta |
+|---|---|---|---|---|---|---|
+| cap 128, no replay | 38.5 / 35.8 % | 39.9 / 40.1 % | 44.50 / 45.15 % | 3.42 / 3.43 | 44.9 → 41.7 % | 0.07 / 0.10 |
+| + C | 32.4 / 31.5 % | 40.6 / 40.8 % | 45.23 / 45.70 % | 3.82 / 4.09 | 46.3 → 44.1 % | 0.10 / 0.17 |
+| + C + B | 32.1 / 29.7 % | 41.5 / 41.2 % | 45.39 / 45.46 % | 4.14 / 4.43 | 45.2 → 44.7 % | **runaway** |
+
+- C still lifts tissue (+0.7 / +0.6) and the edge-restricted ceiling, but routing drops 6 points.
+- **C + B is unstable locally.** Reservoir cells run away: a reservoir-mean theta above 100 in
+  362 of 801 windows (seed 7) and 58 (seed 11), overflowing to infinity in 5 windows. Global
+  activity still holds at 20.2 fires per tick (max 398–611), and saturation stays at 2.2–2.5 %.
+  B's sequence-copying edges plus W updates build tight self-exciting loops that homeostasis
+  can only contain.
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:

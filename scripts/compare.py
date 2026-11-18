@@ -34,7 +34,7 @@ def main():
               f"{mean([p['edge_probe_accuracy'] for p in pr if p.get('edge_probe_accuracy')]):6.4f} "
               f"{mean([p['probe_accuracy'] for p in pr]):6.4f} {mean([p['baseline_accuracy'][1] for p in pr]):6.4f} "
               f"{(f'{old[0]:.3f}->{old[-1]:.3f}' if old else '-'):>15} {g('readout_bits'):5.2f} {g('saturation'):5.3f} "
-              f"{g('reverb_fraction'):6.3f} {st.median(r['reservoir']['theta_mean'] for r in late):6.3f} {late[-1]['input_in_degree']:6.2f}")
+              f"{g('reverb_fraction'):6.3f} {st.median([r['reservoir']['theta_mean'] if r['reservoir']['theta_mean'] is not None else float('inf') for r in late]):6.3f} {late[-1]['input_in_degree']:6.2f}")
 
 
 if __name__ == "__main__":
