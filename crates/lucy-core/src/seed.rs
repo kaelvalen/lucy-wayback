@@ -17,6 +17,8 @@ pub const STREAM_GRAPH: u64 = 0;
 pub const STREAM_CODES: u64 = 1;
 pub const STREAM_RESERVOIR: u64 = 2;
 pub const STREAM_DORMANT: u64 = 3;
+/// Observatory probe shuffling (never touches dynamics).
+pub const STREAM_PROBE: u64 = 4;
 
 pub fn stream(seed: u64, id: u64) -> ChaCha8Rng {
     let mut r = ChaCha8Rng::seed_from_u64(seed);

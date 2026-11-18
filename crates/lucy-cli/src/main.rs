@@ -11,6 +11,7 @@ use lucy_core::kernel::Engine;
 use lucy_core::observe::{
     Observatory, state_hash, unigram_entropy_bits, unigram_top1_accuracy, write_snapshot,
 };
+use lucy_core::probe::{ProbeConfig, Prober};
 use lucy_core::rules::Params;
 use lucy_core::seed::{self, SeedConfig};
 use serde_json::json;
@@ -39,6 +40,20 @@ enum Cmd {
         /// Also dump per-cell stats at the end.
         #[arg(long)]
         snapshot: Option<PathBuf>,
+    },
+    /// Run with the probe ceiling measured every --probe-every bytes (default 100000): metrics
+    /// and probe rows go to --metrics; --dump / --snapshots add per-checkpoint files beside it.
+    Probe {
+        #[command(flatten)]
+        a: RunArgs,
+        #[arg(long, default_value = "runs/probe/metrics.jsonl")]
+        metrics: PathBuf,
+        /// Write each checkpoint's raw probe windows (`probe-<bytes>.*`, scripts/probe.py format).
+        #[arg(long)]
+        dump: bool,
+        /// Write a per-cell snapshot at each checkpoint.
+        #[arg(long)]
+        snapshots: bool,
     },
     /// Run twice and compare hashes of all deterministic metrics + final state.
     CheckDeterminism {
@@ -107,6 +122,12 @@ struct RunArgs {
     /// JSON file overriding any subset of rule constants (see docs/DESIGN.md).
     #[arg(long)]
     params: Option<PathBuf>,
+    /// Probe ceiling every this many bytes (0 = off; `lucy probe` defaults it to 100000).
+    #[arg(long, default_value_t = 0)]
+    probe_every: u64,
+    /// Most recent byte windows each probe trains/tests on (80/20 temporal split).
+    #[arg(long, default_value_t = 200_000)]
+    probe_samples: usize,
 }
 
 struct Setup {
@@ -128,6 +149,8 @@ impl RunArgs {
             ("--ticks-per-byte", self.ticks_per_byte.to_string()),
             ("--ring", self.ring.to_string()),
             ("--metrics-every", self.metrics_every.to_string()),
+            ("--probe-every", self.probe_every.to_string()),
+            ("--probe-samples", self.probe_samples.to_string()),
         ] {
             v.push(flag.to_string());
             v.push(val);
@@ -146,6 +169,10 @@ impl RunArgs {
         );
         ensure!(self.metrics_every > 0, "--metrics-every must be > 0");
         ensure!(self.threads >= 1, "--threads must be >= 1");
+        ensure!(
+            self.probe_samples >= 1000,
+            "--probe-samples must be >= 1000"
+        );
         if self.threads > 1 {
             // The global pool can only be built once per process; later calls are no-ops.
             let _ = rayon::ThreadPoolBuilder::new()
@@ -193,6 +220,7 @@ fn simulate(
     s: &Setup,
     extra_cells: usize,
     out: Option<Box<dyn Write>>,
+    artifacts: Option<(PathBuf, bool, bool)>,
 ) -> Result<Outcome> {
     let mut eng = seed::build(&s.cfg, s.p.clone());
     eng.parallel = a.threads > 1;
@@ -212,6 +240,18 @@ fn simulate(
         "seed_config": s.cfg,
         "params": s.p,
     }))?;
+    if a.probe_every > 0 {
+        let (dir, dump, snapshots) =
+            artifacts.map_or((None, false, false), |(d, x, y)| (Some(d), x, y));
+        let cfg = ProbeConfig {
+            every: a.probe_every,
+            samples: a.probe_samples,
+            dir,
+            dump,
+            snapshots,
+        };
+        obs.prober = Some(Prober::new(cfg, s.corpus.clone(), s.cfg.ticks_per_byte));
+    }
     let t0 = Instant::now();
     eng.run(&mut s.corpus.iter().copied(), a.ticks, &mut obs)?;
     Ok(Outcome {
@@ -260,6 +300,17 @@ fn summary(o: &Outcome) {
             f(m.fires_per_tick),
         );
     }
+    if let Some(r) = o.obs.probes.last() {
+        println!(
+            "headline @ {} bytes: routing (readout) {:.4}  tissue (probe ceiling) {:.4}  | uni {:.4} bi {:.4} tri {:.4} (probe split)",
+            r.bytes_seen,
+            r.readout_accuracy,
+            r.probe_accuracy,
+            r.baseline_accuracy[0],
+            r.baseline_accuracy[1],
+            r.baseline_accuracy[2],
+        );
+    }
 }
 
 fn main() -> Result<()> {
@@ -270,7 +321,7 @@ fn main() -> Result<()> {
             snapshot,
         } => {
             let s = a.setup()?;
-            let o = simulate(&a, &s, 0, Some(Box::new(create(&metrics)?)))?;
+            let o = simulate(&a, &s, 0, Some(Box::new(create(&metrics)?)), None)?;
             summary(&o);
             println!(
                 "state hash {:016x}  metrics -> {}",
@@ -282,6 +333,29 @@ fn main() -> Result<()> {
                 println!("snapshot -> {}", path.display());
             }
         }
+        Cmd::Probe {
+            mut a,
+            metrics,
+            dump,
+            snapshots,
+        } => {
+            if a.probe_every == 0 {
+                a.probe_every = 100_000;
+            }
+            let s = a.setup()?;
+            let dir = metrics
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+            let w = Box::new(create(&metrics)?);
+            let o = simulate(&a, &s, 0, Some(w), Some((dir, dump, snapshots)))?;
+            summary(&o);
+            println!(
+                "state hash {:016x}  metrics + probe -> {}",
+                state_hash(&o.eng),
+                metrics.display()
+            );
+        }
         Cmd::CheckDeterminism { a } => {
             let s = a.setup()?;
             // With --threads > 1 the first run is single-threaded: the check then also proves the
@@ -292,7 +366,7 @@ fn main() -> Result<()> {
                     threads: 1,
                     ..a.clone()
                 };
-                let o = simulate(if run == 1 { &single } else { &a }, &s, 0, None)?;
+                let o = simulate(if run == 1 { &single } else { &a }, &s, 0, None, None)?;
                 let h = (o.obs.metrics_hash(), state_hash(&o.eng));
                 println!(
                     "run {run}: metrics {:016x}  state {:016x}  ({} events, {:.2}s)",
@@ -307,7 +381,7 @@ fn main() -> Result<()> {
         }
         Cmd::Snapshot { a, out } => {
             let s = a.setup()?;
-            let o = simulate(&a, &s, 0, None)?;
+            let o = simulate(&a, &s, 0, None, None)?;
             summary(&o);
             write_snapshot(&o.eng, &mut create(&out)?)?;
             println!("snapshot -> {}", out.display());
@@ -341,7 +415,7 @@ fn main() -> Result<()> {
             let mut base: Option<(u64, f64)> = None;
             for &k in &multipliers {
                 ensure!(k >= 1, "multipliers must be >= 1");
-                let o = simulate(&a, &s, (k - 1) * a.cells, None)?;
+                let o = simulate(&a, &s, (k - 1) * a.cells, None, None)?;
                 let (events, fires) = (o.eng.stats.events, o.eng.ring.total());
                 let ns_event = o.secs * 1e9 / events as f64;
                 let (base_events, base_ns) = *base.get_or_insert((events, ns_event));

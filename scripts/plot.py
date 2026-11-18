@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 def load(path):
-    header, rows = {}, []
+    header, rows, probes = {}, [], []
     with open(path) as f:
         for line in f:
             d = json.loads(line)
@@ -21,7 +21,9 @@ def load(path):
                 header = d
             elif d.get("kind") == "metrics" and d.get("accuracy") is not None:
                 rows.append(d)  # windows with no byte (e.g. after the corpus ended) are skipped
-    return header, rows
+            elif d.get("kind") == "probe":
+                probes.append(d)
+    return header, rows, probes
 
 
 def series(rows, *keys):
@@ -53,7 +55,8 @@ def main():
         sys.exit(__doc__)
     path = sys.argv[1]
     out = sys.argv[2] if len(sys.argv) > 2 else path.rsplit(".", 1)[0] + ".png"
-    header, rows = load(path)
+    header, rows, probes = load(path)
+    px = [p["bytes_seen"] for p in probes]
     if not rows:
         sys.exit(f"no metrics rows in {path}")
 
@@ -66,6 +69,8 @@ def main():
         a.axhline(header["unigram_entropy_bits"], color="k", ls="--", label="unigram entropy")
     for i, name in enumerate(NAMES):
         a.plot(*baseline(rows, "baseline_bits", i), ls="-.", lw=1, label=f"{name} (online, KT)")
+    if probes:
+        a.plot(px, [p["probe_bits"] for p in probes], "o-", color="C5", lw=2, label="probe ceiling (bits, test)")
     a.axhline(8.0, color="grey", ls=":", label="uniform (8 bits)")
     a.set_title("Surprise per byte")
     a.legend()
@@ -76,8 +81,11 @@ def main():
         a.axhline(header["unigram_top1_accuracy"], color="k", ls="--", label="always most-frequent byte")
     for i, name in enumerate(NAMES):
         a.plot(*baseline(rows, "baseline_accuracy", i), ls="-.", lw=1, label=f"{name} top-1 (online)")
+    if probes:
+        a.plot(px, [p["probe_accuracy"] for p in probes], "o-", color="C5", lw=2, label="tissue: probe ceiling")
+        a.plot(px, [p.get("readout_accuracy") for p in probes], "s--", color="C0", label="routing: readout (probe test bytes)")
     a.axhline(1 / 256, color="grey", ls=":", label="chance")
-    a.set_title("Guess accuracy")
+    a.set_title("Guess accuracy: routing (readout) vs tissue (probe ceiling)")
     a.legend()
 
     a = ax[1][0]
@@ -133,8 +141,13 @@ def main():
     a = ax[3][1]
     a.plot(*series(rows, "surprise_temperature"), label="tau (observatory-only calibration)")
     a.set_yscale("log")
-    a.set_title("Surprise calibration temperature")
-    a.legend()
+    b = a.twinx()
+    b.plot(*series(rows, "input_in_degree"), color="C3", label="in-edges per input cell")
+    if "hidden_in_degree" in rows[-1]:
+        b.plot(*series(rows, "hidden_in_degree"), color="C4", label="in-edges per hidden cell")
+    a.set_title("Calibration temperature and edges per cell")
+    a.legend(loc="upper left")
+    b.legend(loc="upper right")
 
     for row in ax:
         for a in row:

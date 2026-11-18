@@ -81,11 +81,16 @@ fn summarize(path: &Path) -> Result<Value> {
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|v| v["kind"] == "metrics" && !v["accuracy"].is_null())
         .collect();
+    let probe = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .rfind(|v| v["kind"] == "probe");
     let f = |key: &'static str| tail_mean(&rows, 10, |r| r[key].as_f64());
     let base = |i: usize| tail_mean(&rows, 10, |r| r["baseline_accuracy"][i].as_f64());
     Ok(json!({
         "windows": rows.len(),
         "accuracy": f("accuracy"),
+        "probe_ceiling": probe.as_ref().and_then(|p| p["probe_accuracy"].as_f64()),
         "surprise_bits": f("surprise_bits"),
         "unigram_acc": base(0),
         "bigram_acc": base(1),
@@ -151,8 +156,18 @@ impl Sweep<'_> {
 
         let mut table = Vec::new();
         println!(
-            "\n{:<36} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>9}",
-            "run", "acc", "uni", "bigram", "trigram", "surpr", "f/tick", "reverb", "theta", "ev/s"
+            "\n{:<36} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>9}",
+            "run",
+            "acc",
+            "probe",
+            "uni",
+            "bigram",
+            "trigram",
+            "surpr",
+            "f/tick",
+            "reverb",
+            "theta",
+            "ev/s"
         );
         for job in &jobs {
             let Ok(s) = summarize(&self.out.join(format!("{}.jsonl", job.name))) else {
@@ -160,9 +175,10 @@ impl Sweep<'_> {
             };
             let g = |k: &str| s[k].as_f64().unwrap_or(f64::NAN);
             println!(
-                "{:<36} {:>7.4} {:>7.4} {:>7.4} {:>7.4} {:>7.3} {:>7.1} {:>7.3} {:>7.4} {:>9.0}",
+                "{:<36} {:>7.4} {:>7.4} {:>7.4} {:>7.4} {:>7.4} {:>7.3} {:>7.1} {:>7.3} {:>7.4} {:>9.0}",
                 job.name,
                 g("accuracy"),
+                g("probe_ceiling"),
                 g("unigram_acc"),
                 g("bigram_acc"),
                 g("trigram_acc"),

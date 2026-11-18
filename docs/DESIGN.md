@@ -27,6 +27,7 @@ Four laws:
 | `senses` | byte codes, hot-set of input cells, guess and surprise readout |
 | `seed` | deterministic initial graph; dormant-cell extension for the scaling benchmark |
 | `observe` | windowed stats, JSONL reports, reservoir sample, state hash, snapshot, unigram baselines |
+| `probe` | probe ceiling: per-byte fired-cell windows, softmax-regression probe at checkpoints (observatory only) |
 
 `crates/lucy-cli` is the `lucy` binary. `scripts/plot.py` plots a metrics file.
 
@@ -195,6 +196,23 @@ config and params. Metrics:
   seed-derived sample of 1024 hidden cells (O(1024) per report). Each gives tau mean/p50/p90/p99
   and mean theta_eff, v and rate.
 - `wall.events_per_sec`: wall-clock, excluded from the determinism hash.
+
+**Two headline metrics, every run.** *Routing* = Lucy's own readout top-1 (`accuracy`).
+*Tissue* = the **probe ceiling**: top-1 of an offline linear probe on which hidden cells fired in
+the K ticks before each byte, i.e. how much next-byte information the reservoir holds whether or
+not Lucy routes it. Both are read against the uni/bi/trigram lines. `lucy probe` (or
+`--probe-every N` on any run/sweep) records one window per byte from the ring (O(fires per byte))
+and at every N-byte checkpoint trains on the last `--probe-samples` windows (default 200 k) with
+the `scripts/probe.py` protocol: temporal 80/20 split, L2-normalized binary rows, softmax
+regression, minibatch SGD (batch 256, 6 epochs, lr 0.2/(1+epoch)), plus a one-hot previous-byte
+control probe and train-fitted count baselines on the same split. Each checkpoint writes a
+`{"kind": "probe"}` line (unhashed: observation only) with `probe_accuracy`/`probe_bits`,
+`readout_accuracy` (Lucy on the *same test bytes*), control and baselines; `--dump` adds the raw
+windows in `probe.py` format, `--snapshots` a cell snapshot. Equivalence with the numpy reference:
+on byte-identical windows (CHILDES 300 k–500 k, seed 7) the Rust probe gives 44.45 % / 2.792 bits
+vs probe.py 44.52 % / 2.793 (shuffle-order noise; two probe.py runs on identical dynamics differ
+by the same 0.07 %), control 41.05 % vs 41.02 %, count baselines identical. ≈ 9 s per 200 k-sample
+checkpoint.
 
 `snapshot` writes one JSON line per live cell (theta, rate, v, tau, heat, degrees, gain norms).
 

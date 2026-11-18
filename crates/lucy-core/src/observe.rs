@@ -159,6 +159,8 @@ impl Baselines {
 pub struct Stats {
     pub events: u64,
     pub bytes_total: u64,
+    /// Correct readout guesses since the start (never reset; the probe reads it).
+    pub correct_total: u64,
     pub fires: u64,
     pub hidden_fires: u64,
     pub e2_sum: f64,
@@ -241,6 +243,7 @@ impl Stats {
         self.bytes_total += 1;
         self.bytes += 1;
         self.correct += u64::from(correct);
+        self.correct_total += u64::from(correct);
         self.surprise_sum += surprise;
     }
 
@@ -404,6 +407,9 @@ pub struct Observatory {
     start: Instant,
     pub reports: u64,
     pub last: Option<Metrics>,
+    /// Probe ceiling at checkpoints (unhashed lines: observation only).
+    pub prober: Option<crate::probe::Prober>,
+    pub probes: Vec<crate::probe::ProbeReport>,
 }
 
 impl Observatory {
@@ -434,6 +440,8 @@ impl Observatory {
             start: now,
             reports: 0,
             last: None,
+            prober: None,
+            probes: Vec::new(),
         }
     }
 
@@ -449,6 +457,11 @@ impl Observatory {
 
     /// Emit a report for every interval boundary <= t (called before processing events at t).
     pub fn observe_until(&mut self, eng: &mut Engine, t: u64) -> io::Result<()> {
+        if let Some(p) = &mut self.prober {
+            for r in p.observe_until(eng, t)? {
+                self.write_probe(r)?;
+            }
+        }
         while self.next <= t {
             self.report(eng, self.next)?;
             self.next += self.every;
@@ -461,10 +474,32 @@ impl Observatory {
         if eng.stats.events > self.last_events {
             self.report(eng, eng.now + 1)?;
         }
+        if let Some(r) = self
+            .prober
+            .as_mut()
+            .map(|p| p.finish(eng))
+            .transpose()?
+            .flatten()
+        {
+            self.write_probe(r)?;
+        }
         match &mut self.out {
             Some(w) => w.flush(),
             None => Ok(()),
         }
+    }
+
+    fn write_probe(&mut self, r: crate::probe::ProbeReport) -> io::Result<()> {
+        if let Some(w) = &mut self.out {
+            writeln!(
+                w,
+                "{}",
+                serde_json::to_string(&r).map_err(io::Error::other)?
+            )?;
+            w.flush()?;
+        }
+        self.probes.push(r);
+        Ok(())
     }
 
     pub fn metrics_hash(&self) -> u64 {
