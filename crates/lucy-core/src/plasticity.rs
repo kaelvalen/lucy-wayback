@@ -3,7 +3,10 @@
 //! Every `consolidate_every` bytes the engine replays its fire recording (the ring buffer) since
 //! the last pass, an offline, sleep-like consolidation. A byte window is the set of hidden cells
 //! that fired between two byte arrivals (the K ticks before the second). Hidden cells that fire
-//! before byte `b` more often than chance get a new edge `h -> b` with a small gain. In-edges of
+//! before byte `b` more often than chance get a new edge `h -> b` with a small gain. How many a
+//! cell may grow is its tension budget (`rules::growth_budget`): proportional to how long its
+//! prediction error stayed above its own running floor since the last pass, so a cell whose error
+//! keeps falling grows nothing. In-edges of
 //! input cells live on *earned* vitality (credited when they fed the cell whose byte then really
 //! arrived, see `kernel::arrive`): below `prune_vitality` they die, and above `input_in_cap`
 //! the lowest-vitality edge dies first.
@@ -20,12 +23,42 @@ use crate::rules;
 use crate::senses::N_BYTES;
 use crate::store::Kind;
 
-/// Consolidation bookkeeping (not dynamics state: it only decides when and from where to replay).
-#[derive(Clone, Debug, Default)]
+/// Consolidation state: where to replay from, and each input cell's tension (growth law).
+#[derive(Clone, Debug)]
 pub struct Plasticity {
     /// First ring sequence number not yet replayed.
     pub next_seq: u64,
     pub passes: u64,
+    /// Per input cell: error EMA, its running floor, excess accumulated since the last pass,
+    /// fractional growth budget carried over.
+    pub err: Vec<S>,
+    pub floor: Vec<S>,
+    pub excess: Vec<S>,
+    pub carry: Vec<S>,
+}
+
+impl Default for Plasticity {
+    fn default() -> Self {
+        // Error 1 = "predicts nothing" (pred = 0, |code|^2 / D = 1).
+        Self {
+            next_seq: 0,
+            passes: 0,
+            err: vec![1.0; N_BYTES],
+            floor: vec![1.0; N_BYTES],
+            excess: vec![0.0; N_BYTES],
+            carry: vec![0.0; N_BYTES],
+        }
+    }
+}
+
+impl Plasticity {
+    /// Byte `b` arrived and its cell's readout missed by `x = |code - pred|^2 / D`.
+    pub fn observe_error(&mut self, b: usize, x: S, p: &rules::Params) {
+        let (err, floor, excess) = rules::tension_step(self.err[b], self.floor[b], x, p);
+        self.err[b] = err;
+        self.floor[b] = floor;
+        self.excess[b] += excess;
+    }
 }
 
 /// What one consolidation pass did.
@@ -34,6 +67,8 @@ pub struct PassReport {
     pub windows: u64,
     pub grown: u64,
     pub pruned: u64,
+    /// Sum over input cells of their growth budgets this pass.
+    pub budget: u64,
     /// Fire events overwritten in the ring before they could be replayed.
     pub lost_events: u64,
 }
@@ -79,8 +114,15 @@ pub fn consolidate(eng: &mut Engine, t: u64) -> PassReport {
         }
     }
 
-    // 2. Grow: per byte cell, the hidden cells with the largest excess co-occurrence over chance
-    //    (N(h,b) - f_h n_b / W) that are not already connected.
+    // 2. Grow: per byte cell, up to its tension budget, the hidden cells with the largest excess
+    //    co-occurrence over chance (N(h,b) - f_h n_b / W) that are not already connected.
+    let mut budget = [0u32; N_BYTES];
+    for (b, n) in budget.iter_mut().enumerate() {
+        let pl = &mut eng.plasticity;
+        (*n, pl.carry[b]) = rules::growth_budget(pl.excess[b], pl.carry[b], p);
+        pl.excess[b] = 0.0;
+        rep.budget += u64::from(*n);
+    }
     if rep.windows > 0 {
         let w = rep.windows as f64;
         let mut cand: Vec<(u32, f64, u32, u32)> = pairs
@@ -98,7 +140,7 @@ pub fn consolidate(eng: &mut Engine, t: u64) -> PassReport {
                 cur = b;
                 taken = 0;
             }
-            if taken >= p.grow_per_cell {
+            if taken >= budget[b as usize] {
                 continue;
             }
             let ins = &eng.g.cells.ins[b as usize];
@@ -176,7 +218,7 @@ mod tests {
     fn grows_predictive_edges_and_respects_cap() {
         let p = Params {
             consolidate_every: 200,
-            grow_per_cell: 3,
+            grow_per_tension: 10.0,
             input_in_cap: 18,
             ..Params::default()
         };

@@ -4,7 +4,7 @@
 use std::io;
 
 use crate::buffer::{FireEvent, Ring};
-use crate::num::{M, S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
+use crate::num::{D, M, S, V, ZERO, axpy, matvec_t, neg, norm, norm2, quantize_unit, scale, sub};
 use crate::observe::{Observatory, Stats};
 use crate::rules::{self, Params, Scalars};
 use crate::scheduler::{Payload, Scheduler};
@@ -389,6 +389,8 @@ impl Engine {
             rules::nlms(&mut cells.q[c], &e, &u, &self.p);
             self.learn_in_gains(c, &toward);
             if truth {
+                self.plasticity
+                    .observe_error(b, norm2(&e) / D as S, &self.p);
                 // In-edges that fed the cell whose byte really arrived earn vitality.
                 let Graph { cells, edges } = &mut self.g;
                 for cr in &cells.credit[c] {

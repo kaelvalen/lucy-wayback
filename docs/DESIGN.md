@@ -123,12 +123,23 @@ engine replays its fire ring since the last pass (offline, sleep-like):
 
 1. **Replay.** A byte window = hidden cells that fired between two byte arrivals (input-cell fires
    in the ring). Count `N(h, b)` (h fired in the window before byte b), `f_h`, `n_b`, windows `W`.
-2. **Grow.** For each byte cell, up to `grow_per_cell` unconnected hidden cells with the largest
+2. **Grow.** For each byte cell, up to its **tension budget** (below) unconnected hidden cells with the largest
    *excess* co-occurrence `N(h,b) − f_h·n_b/W > 0` get an edge `h → b` (gain `grow_gain`,
    vitality = `N(h,b)`, what it already earned). Excess, not raw count: raw counts would route
    every new edge to the most frequent byte (space).
 3. **Prune** each input cell's in-edges: decayed vitality < `prune_vitality` dies; over
    `input_in_cap`, lowest vitality dies first (ties → lower edge index).
+
+**Growth law: tension, not a fixed rate.** At each arrival of byte b its input cell measures its
+miss `x = |code_b − pred_b|²/D` (1 = predicted nothing) and updates an error EMA
+(`alpha_err` = 0.03 per arrival) and a running **floor**: the floor follows the error down at once
+and otherwise decays toward 0 by `alpha_floor` = 0.001 per arrival (an aspiration level). The
+excess `err − floor` is summed over the cell's arrivals between passes; the pass grants
+`floor(grow_per_tension × Σexcess + carry)` new edges (fraction carried, at most `input_in_cap`).
+A cell whose error falls faster than its floor decays gets exactly zero; a stuck cell's budget
+grows with how high and how long it stays stuck. First version had the floor creep *up* toward the
+error instead: a cell with no in-edges sits at err = floor = 1 forever and never grows (seen: `?`,
+984 occurrences in 100 k bytes, zero in-edges) — the decaying floor fixes exactly that case.
 
 **Vitality of edges into input cells is earned, not used:** it is credited (`+alpha_v`, lazily
 decayed with `t_v`) when the edge carried a message into the cell whose byte then really arrived,
@@ -157,7 +168,9 @@ tie-breaks keep it deterministic (tested).
 | `alpha_tau` | 0.05 | tau averages over ~20 fires. |
 | `alpha_v` | 1.0 | Unit vitality per use (scale is arbitrary until death exists). |
 | `consolidate_every` | 1000 bytes | Consolidation period. Must replay before the ring wraps: 1000 bytes × K × ~21 fires/tick ≈ 170 k events < 262 k ring slots (`consolidation_lost_events` reports any loss). 0 = off. |
-| `grow_per_cell` | 2 | New hidden→input edges per byte cell per pass: slow enough that pruning can keep up. |
+| `grow_per_tension` | 1.0 | Edges per unit of summed error excess (sweep: 0.01–64 all give 0.30–0.35 accuracy at 200 k bytes; 1.0 best mean over seeds 7, 11). |
+| `alpha_err` | 0.03 | Error EMA per own arrival: ~30 occurrences, enough to average one byte's contexts. |
+| `alpha_floor` | 0.001 | Floor decay per own arrival: a stuck cell's budget ramps up over ~1000 occurrences (≈ 1 pass for space, ≈ 100 passes for a rare byte). |
 | `grow_gain` | 0.1 | New edges start small; synaptic scaling then folds them into the cell's fixed gain budget. |
 | `prune_vitality` | 0.5 | An in-edge of an input cell must keep earning: a single co-occurrence decays below 0.5 after ≈ 69 k ticks (≈ 8.7 k bytes). |
 | `input_in_cap` | 32 | Homeostatic in-degree cap of input cells (2× the seed fan-in). Over it, the lowest-vitality edge dies. |

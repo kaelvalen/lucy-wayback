@@ -178,6 +178,7 @@ pub struct Stats {
     /// Structural plasticity in the window (all consolidation passes).
     pub edges_grown: u64,
     pub edges_pruned: u64,
+    pub growth_budget: u64,
     pub lost_events: u64,
     pub truth_hot: u64,
     pub max_tick_fires: u64,
@@ -217,6 +218,7 @@ impl Stats {
     pub fn on_consolidation(&mut self, r: &crate::plasticity::PassReport) {
         self.edges_grown += r.grown;
         self.edges_pruned += r.pruned;
+        self.growth_budget += r.budget;
         self.lost_events += r.lost_events;
     }
 
@@ -261,6 +263,7 @@ impl Stats {
         self.hot_inputs = 0;
         self.edges_grown = 0;
         self.edges_pruned = 0;
+        self.growth_budget = 0;
         self.lost_events = 0;
         self.truth_hot = 0;
         self.max_tick_fires = 0;
@@ -356,8 +359,16 @@ pub struct Metrics {
     /// Structural plasticity in the window, and mean in-degree of the 256 input cells.
     pub edges_grown: u64,
     pub edges_pruned: u64,
+    /// Edges input cells were allowed to grow (tension budget) in the window.
+    pub growth_budget: u64,
+    /// Input cells' prediction error EMA and its excess over the running floor (means over 256).
+    pub input_error: f64,
+    pub input_error_excess: f64,
     pub consolidation_lost_events: u64,
     pub input_in_degree: f64,
+    /// Input cells with no in-edge (cannot predict at all) and at the in-degree cap.
+    pub input_unwired: usize,
+    pub input_at_cap: usize,
     pub events_total: u64,
     pub pending_events: usize,
     /// Hidden cells that fired in the window (exact).
@@ -538,11 +549,27 @@ impl Observatory {
             truth_hot_fraction: ratio(s.truth_hot as f64, s.bytes),
             edges_grown: s.edges_grown,
             edges_pruned: s.edges_pruned,
+            growth_budget: s.growth_budget,
+            input_error: eng.plasticity.err.iter().map(|&x| x as f64).sum::<f64>() / 256.0,
+            input_error_excess: eng
+                .plasticity
+                .err
+                .iter()
+                .zip(&eng.plasticity.floor)
+                .map(|(&e, &f)| (e - f) as f64)
+                .sum::<f64>()
+                / 256.0,
             consolidation_lost_events: s.lost_events,
             input_in_degree: (0..crate::senses::N_BYTES)
                 .map(|b| eng.g.cells.ins[b].len())
                 .sum::<usize>() as f64
                 / crate::senses::N_BYTES as f64,
+            input_unwired: (0..crate::senses::N_BYTES)
+                .filter(|&b| eng.g.cells.ins[b].is_empty())
+                .count(),
+            input_at_cap: (0..crate::senses::N_BYTES)
+                .filter(|&b| eng.g.cells.ins[b].len() >= eng.p.input_in_cap as usize)
+                .count(),
             events_total: s.events,
             pending_events: eng.pending_events(),
             fired: pop_stats(eng, hidden_fired.into_iter(), tick),
@@ -618,8 +645,12 @@ pub fn state_hash(eng: &Engine) -> u64 {
     for &n in &eng.senses.bias_seen {
         h.u64(n);
     }
-    h.u64(eng.plasticity.next_seq);
-    h.u64(eng.plasticity.passes);
+    let pl = &eng.plasticity;
+    h.u64(pl.next_seq);
+    h.u64(pl.passes);
+    for v in [&pl.err, &pl.floor, &pl.excess, &pl.carry] {
+        h.f32s(v);
+    }
     h.u64(eng.ring.total());
     for ev in eng.ring.iter() {
         h.u64(((ev.cell.idx as u64) << 32) | ev.cell.generation as u64);

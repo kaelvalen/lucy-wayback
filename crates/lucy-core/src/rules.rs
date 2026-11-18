@@ -37,8 +37,13 @@ pub struct Params {
     pub eta_bias: S,
     /// Structural plasticity: consolidate (replay, grow, prune) every this many bytes; 0 = off.
     pub consolidate_every: u32,
-    /// New hidden -> input edges per input cell per consolidation pass.
-    pub grow_per_cell: u32,
+    /// Growth law: edges an input cell may grow per unit of accumulated tension excess
+    /// (sum over its arrivals of err - floor since the last pass).
+    pub grow_per_tension: S,
+    /// EMA weight of an input cell's prediction error, per arrival of its own byte.
+    pub alpha_err: S,
+    /// Per-arrival decay of the error floor toward 0 (it also follows the error down at once).
+    pub alpha_floor: S,
     /// Gain of a newly grown edge (synaptic scaling then folds it into the cell's budget).
     pub grow_gain: S,
     /// In-edges of input cells whose earned vitality decays below this die.
@@ -64,7 +69,9 @@ impl Default for Params {
             alpha_v: 1.0,
             eta_bias: 0.005,
             consolidate_every: 1000,
-            grow_per_cell: 2,
+            grow_per_tension: 1.0,
+            alpha_err: 0.03,
+            alpha_floor: 0.001,
             grow_gain: 0.1,
             prune_vitality: 0.5,
             input_in_cap: 32,
@@ -103,6 +110,17 @@ impl Params {
                 "eta_q must be in [0, 2) for NLMS stability, got {}",
                 self.eta_q
             ));
+        }
+        for (name, x) in [
+            ("alpha_err", self.alpha_err),
+            ("alpha_floor", self.alpha_floor),
+        ] {
+            if !(x > 0.0 && x <= 1.0) {
+                return Err(format!("{name} must be in (0, 1], got {x}"));
+            }
+        }
+        if !(self.grow_per_tension.is_finite() && self.grow_per_tension >= 0.0) {
+            return Err("grow_per_tension must be finite and >= 0".into());
         }
         if !(self.grow_gain.is_finite()
             && self.prune_vitality.is_finite()
@@ -340,6 +358,26 @@ pub fn ema(old: S, x: S, alpha: S) -> S {
     old + alpha * (x - old)
 }
 
+/// TENSION drives structure. At each arrival of its own byte, an input cell updates the EMA of
+/// its prediction error `x = |code - pred|^2 / D` and a running floor of that EMA: the floor
+/// follows the error down at once and otherwise decays toward 0 by `alpha_floor` per arrival
+/// (an aspiration level). Returns (err, floor, excess = err - floor): zero while the error keeps
+/// falling faster than the floor decays, growing while it is stuck, including stuck at "predicts
+/// nothing" (err = 1), which a floor that only tracked the error's own minimum would never see.
+pub fn tension_step(err: S, floor: S, x: S, p: &Params) -> (S, S, S) {
+    let err = ema(err, x, p.alpha_err);
+    let floor = err.min(floor * (1.0 - p.alpha_floor));
+    (err, floor, err - floor)
+}
+
+/// Edges a cell may grow this pass: `grow_per_tension * excess + carry`, at most `input_in_cap`;
+/// the fractional part carries to the next pass. Returns (budget, carry).
+pub fn growth_budget(excess: S, carry: S, p: &Params) -> (u32, S) {
+    let x = p.grow_per_tension * excess + carry;
+    let n = x.floor();
+    (n.min(p.input_in_cap as S) as u32, x - n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +578,40 @@ mod tests {
             b = bias_step(b, !is_a, b, &p);
         }
         assert!(close(a, 0.75, 0.05) && close(b, 0.25, 0.05), "{a} {b}");
+    }
+
+    #[test]
+    fn falling_error_grows_nothing_stuck_error_does() {
+        let p = Params::default();
+        let (mut err, mut floor, mut total) = (1.0, 1.0, 0.0);
+        for i in 0..200 {
+            let x = 0.5 - i as S / 500.0; // steadily improving, faster than the floor decays
+            let (e, f, ex) = tension_step(err, floor, x, &p);
+            (err, floor, total) = (e, f, total + ex);
+        }
+        assert_eq!(total, 0.0);
+        let mut total = 0.0;
+        for i in 0..500 {
+            let x = if i % 2 == 0 { 0.9 } else { 0.3 }; // stuck, noisy
+            let (e, f, ex) = tension_step(err, floor, x, &p);
+            (err, floor, total) = (e, f, total + ex);
+        }
+        assert!(total > 1.0, "{total}");
+        // Stuck at "predicts nothing": excess still accumulates.
+        let (mut err, mut floor, mut total) = (1.0, 1.0, 0.0);
+        for _ in 0..500 {
+            let (e, f, ex) = tension_step(err, floor, 1.0, &p);
+            (err, floor, total) = (e, f, total + ex);
+        }
+        assert!(total > 50.0, "{total}");
+        // Budget: integer part now, fraction carried; capped at input_in_cap.
+        let p = Params {
+            grow_per_tension: 2.0,
+            ..Params::default()
+        };
+        assert_eq!(growth_budget(1.3, 0.0, &p), (2, 0.5999999));
+        assert_eq!(growth_budget(0.1, 0.6, &p).0, 0);
+        assert_eq!(growth_budget(1e6, 0.0, &p).0, p.input_in_cap);
     }
 
     #[test]
