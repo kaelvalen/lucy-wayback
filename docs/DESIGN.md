@@ -537,6 +537,35 @@ checkpoints:
   - The normalization needs a regularizer (`readout_eps` = 1). With 1e-3, own surprise was
     4.6–6.8 bits from overconfident logits.
 
+### Wayback C (`505b1b6`), CHILDES 1 MiB, seeds 7 and 11
+
+`replay_per_pass = 128`, `eta_w = 0.3`, 32 dreams per pass, against replay off (the same
+competitive-readout engine). Means of the 10 checkpoints (200 k probe windows). Forgetting =
+full probe on the first 20 k bytes, re-read through a frozen clone.
+
+| seed | replay | tissue (full probe) | edge probe | routing | own surprise | forgetting probe: first → last checkpoint | saturation | reverb |
+|---|---|---|---|---|---|---|---|---|
+| 7 | off | 44.50 % | 37.8 % | 36.4 % | 3.41 bits | 44.9 → 41.7 % | 0.0 % | 34 % |
+| 7 | on | **45.27 %** | 38.9 % | **29.6 %** | **5.82 bits** | 45.9 → 43.1 % | 3.0 % | 38 % |
+| 11 | off | 45.15 % | 38.9 % | 36.6 % | 3.35 bits | 46.2 → 42.8 % | 0.0 % | 36 % |
+| 11 | on | **45.78 %** | 39.8 % | **29.5 %** | **5.88 bits** | 46.8 → 44.1 % | 3.6 % | 43 % |
+
+- **Tissue rises above 44.5 %.** The gain is +0.7 / +0.6 points, and replay is ahead at 19 of
+  20 checkpoints across both seeds. The edge-restricted probe rises too (+1.1 / +0.9).
+- **Forgetting stays flat relative to replay off.** The early-segment probe falls by ≈ 3 points
+  over 1 MiB *with or without* replay, because Q, gains and thresholds drift as well. With
+  replay it is higher at every checkpoint and falls slightly less (−2.8 vs −3.2, −2.7 vs −3.4).
+- **Routing breaks (stability risk 3, moving target).** Readout accuracy falls 36.4 → 29.5 %
+  and keeps falling (last 5 checkpoints 28 %). Lucy's own surprise rises to 5.8 bits, worse
+  than unigram: confident logits on hidden states that W has moved since Q learned them. Seen
+  at 200 k too: `eta_w` 0.03 keeps routing (35 %) but gives no tissue gain.
+- **Health.** Fires per tick stay at budget, and branching stays at 0.94–0.95. Saturation goes
+  from 0 to 3–4 % of state components and reverb rises 4–7 points. With B on as well (200 k), one
+  reservoir cell briefly ran away (fired every tick for ~100 ticks, log-theta +21) and
+  homeostasis absorbed it within one window.
+- **Before turning it on:** the readout must track W. Options are a slower `eta_w` with more
+  segments, or re-fitting the readout from replay. Either way, C stays off by default.
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
