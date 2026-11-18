@@ -444,6 +444,30 @@ test bytes at each 100 k checkpoint (probe = last 200 k windows).
   to priors that differ by tenths. The readout cannot use the context its in-edges deliver. The
   probe gets 44.7 % from the same firing with a joint 256-way softmax over all cells.
 
+### Hidden→hidden growth B (`c81d1e3`), CHILDES, seed 7 (and 11 at 200 k)
+
+| `hidden_grow_per_pass` | tissue @200 k (s7 / s11) | tissue, 1 MiB mean of 10 checkpoints | routing (1 MiB) | hidden in-degree | reverb | theta | max fires/tick | branching |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 44.45 / 45.03 % | **44.5 %** | 32.4 % | 9.0 | 34 % | 0.069 | 298 | 0.95 |
+| 16 | 44.52 / 44.92 % | | | 9.5 | | | | 0.95 |
+| 64 | 44.47 / 44.67 % | | | 10.4 | | | | 0.96 |
+| 256 | 43.87 / 44.92 % | 43.9 % | 32.7 % | 13.4 | **19 %** | **0.124** | 214 | 0.96 |
+
+(Reverb, theta, max fires and branching are means over the last 100 k bytes.)
+
+- **The probe ceiling does not rise above 44.5 %.** At 256 per pass it is 0.6 points lower at
+  every 1 MiB checkpoint.
+- **Recurrence added this way is safe.** Fires per tick stay at 20.5 (homeostasis holds the
+  budget), the branching ratio stays at 0.95–0.96 (subcritical), and max fires per tick go
+  *down*.
+- **It improves both watch items.** Reverb falls from 34 % to 19 %, and theta rises from 0.069 to
+  0.124. Edges that follow existing sequences make waves more byte-locked, so less activity
+  sustains itself.
+- **Reading.** "Fires after A more often than chance" mostly duplicates what the existing
+  dynamics already do. It sharpens the trajectories it copies, but adds no new next-byte
+  information. Information has to come from a teacher signal, which motivates plan C:
+  reality-anchored W learning.
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
