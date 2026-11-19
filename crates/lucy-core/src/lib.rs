@@ -15,3 +15,4 @@ pub mod scheduler;
 pub mod seed;
 pub mod senses;
 pub mod store;
+pub mod words;

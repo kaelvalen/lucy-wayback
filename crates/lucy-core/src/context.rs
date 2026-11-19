@@ -141,7 +141,10 @@ pub struct Context {
     mixer: mix::Mixer,
     /// Set by `predict` for `learn`: the voters (bucket, weight, id, is class) and Σ weights.
     #[serde(skip)]
-    members: Vec<(usize, f64, u32, bool)>,
+    members: Vec<(usize, f64, u32, Voter)>,
+    /// Voters from outside the chain for the next `predict` (mixing only; e.g. the word level).
+    #[serde(skip)]
+    pub extra: Vec<Extra>,
     #[serde(skip)]
     z: f64,
     #[serde(skip)]
@@ -150,6 +153,22 @@ pub struct Context {
     score: Vec<f64>,
     #[serde(skip)]
     order: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Voter {
+    Cell,
+    Class,
+    Extra,
+}
+
+/// An extra voter for `predict`: a next-byte count list (sorted by byte), its total, and its
+/// kind (`< mix::EXTRA_KINDS`), whose reliability the mixer learns per evidence bucket.
+#[derive(Clone, Debug, Default)]
+pub struct Extra {
+    pub kind: usize,
+    pub succ: Vec<(u8, f64)>,
+    pub total: f64,
 }
 
 fn one() -> f64 {
@@ -182,6 +201,7 @@ impl Default for Context {
             vote_class: None,
             mixer: Default::default(),
             members: Vec::new(),
+            extra: Vec::new(),
             z: 0.0,
             chain: Vec::new(),
             score: vec![0.0; N_BYTES],
@@ -242,8 +262,8 @@ impl Context {
                 true => {
                     let b = mix::bucket(cell.depth, cell.total);
                     let a = self.mixer.weight(b);
-                    Self::vote_mix(&mut self.score, &mut self.order, cell, a);
-                    self.members.push((b, a, ci, false));
+                    Self::vote_mix(&mut self.score, &mut self.order, &cell.succ, cell.total, a);
+                    self.members.push((b, a, ci, Voter::Cell));
                 }
                 false => {
                     let w = 2f64.powi(cell.depth.min(p.vote_depth()) as i32);
@@ -265,13 +285,21 @@ impl Context {
                     // The class sits one depth below its cell, in that bucket's reliability.
                     let b = mix::bucket(d.saturating_sub(1), cl.total);
                     let a = p.cls_weight * self.mixer.weight(b);
-                    Self::vote_mix(&mut self.score, &mut self.order, cl, a);
-                    self.members.push((b, a, k, true));
+                    Self::vote_mix(&mut self.score, &mut self.order, &cl.succ, cl.total, a);
+                    self.members.push((b, a, k, Voter::Class));
                 } else {
                     let w = p.cls_weight * 2f64.powi(d.min(p.vote_depth()) as i32 - 1);
                     Self::vote(&mut self.score, &mut self.order, cl, w);
                 }
                 self.vote_class = Some(k);
+            }
+        }
+        if p.ctx_mix {
+            for (i, e) in self.extra.iter().enumerate() {
+                let b = mix::extra_bucket(e.kind, e.total);
+                let a = self.mixer.weight(b);
+                Self::vote_mix(&mut self.score, &mut self.order, &e.succ, e.total, a);
+                self.members.push((b, a, i as u32, Voter::Extra));
             }
         }
         let mut guess = COLD_GUESS;
@@ -323,12 +351,11 @@ impl Context {
     }
 
     /// Mixture vote: the cell's distribution with total weight `a` (`a/T` per count).
-    fn vote_mix(score: &mut [f64], order: &mut Vec<u8>, cell: &Cell, a: f64) {
-        let t = cell.total;
+    fn vote_mix(score: &mut [f64], order: &mut Vec<u8>, succ: &[(u8, f64)], t: f64, a: f64) {
         if t <= 0.0 {
             return;
         }
-        for &(b, v) in &cell.succ {
+        for &(b, v) in succ {
             if score[b as usize] == 0.0 {
                 order.push(b);
             }
@@ -340,20 +367,29 @@ impl Context {
     /// mispredicted.
     fn learn(&mut self, x: u8, p: &Params, probs: &[S]) {
         if p.ctx_mix && self.z > 0.0 {
-            let ph = |c: &Cell| {
-                c.succ
-                    .binary_search_by_key(&x, |&(b, _)| b)
-                    .map_or(0.0, |i| c.succ[i].1 / c.total)
+            let ph = |succ: &[(u8, f64)], t: f64| {
+                succ.binary_search_by_key(&x, |&(b, _)| b)
+                    .map_or(0.0, |i| succ[i].1 / t)
             };
             let ms: Vec<(usize, f64, f64)> = self
                 .members
                 .iter()
-                .map(|&(b, a, id, class)| {
-                    let c = match class {
-                        true => self.classes.get(id),
-                        false => &mut self.cells[id as usize],
+                .map(|&(b, a, id, v)| {
+                    let q = match v {
+                        Voter::Class => {
+                            let c = self.classes.get(id);
+                            ph(&c.succ, c.total)
+                        }
+                        Voter::Cell => {
+                            let c = &self.cells[id as usize];
+                            ph(&c.succ, c.total)
+                        }
+                        Voter::Extra => {
+                            let e = &self.extra[id as usize];
+                            ph(&e.succ, e.total)
+                        }
                     };
-                    (b, a, ph(c))
+                    (b, a, q)
                 })
                 .collect();
             let m = self.score[x as usize] / self.z;

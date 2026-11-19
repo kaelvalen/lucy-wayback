@@ -1127,7 +1127,7 @@ CHILDES 1 MB, K 64, whole run (scratch bench, the same calls as the engine):
 Older wombs (`womb-base`, `womb-k64*`, `womb-cls`) predate the mixer and are rejected cleanly by
 the magic check.
 
-### Step 8 (design for review, not built): word level, steps 4 + 5 combined
+### Step 8: word level, steps 4 + 5 combined (offline bound built: `lucy word-bound`; online version not proposed)
 
 **Why.** Step 5 showed that byte-level successor classes cannot say which word comes next: even
 the hindsight bound adds +0.2 points at word-initial bytes. Step 4 showed that Lucy's own
@@ -1186,7 +1186,33 @@ bits.
 if the bound with surprise boundaries clears **+2 points at word-initial bytes at 68 MB** (today
 32.1 %), with bits not worse. Otherwise stop here and record the negative result.
 
-**What I expect, and why it may fail.**
+**Result** (`words.rs`, `lucy word-bound`). Tissue: the new default (K 64, mixing, 4 M budget).
+Surprise boundaries at 3 bits.
+- **Mechanics.** Word voters enter the learned mixture as extra voters (`Context::extra`): 8
+  kinds, each with its own evidence-bucket reliabilities. Tables count next bytes keyed by
+  (context words or classes, chunk prefix), online and prequentially.
+- **Hindsight parts.** Only the lexicon and the Brown exchange classes: top 30 000 words,
+  next-word features over the top 4 096 words.
+- **"Word-rare"**: word-initial bytes whose (w−1, w0) context was seen < 3 times.
+
+| | 1 MB top-1 | bits | word-initial | 68 MB top-1 | bits | word-initial (whole / last 1 MB) | word-rare |
+|---|---|---|---|---|---|---|---|
+| tissue alone | 69.29 % | 1.5069 | 29.46 % | 74.16 % | 1.1993 | 34.34 / 34.85 % | 38.78 % |
+| + words | 69.56 % | 1.4854 | 29.52 % | 74.72 % | 1.1729 | 34.92 / 36.08 % | 39.30 % |
+| + words + 256 classes | 70.27 % | 1.4467 | 30.78 % | 74.78 % | 1.1687 | 34.96 / 36.07 % | 39.35 % |
+| + words + 1024 classes | 70.43 % | 1.4447 | 31.51 % | 74.77 % | 1.1697 | 34.96 / 36.09 % | 39.34 % |
+
+- **Decision rule not met.** At 68 MB the bound adds +0.6 points at word-initial bytes over the
+  whole run and +1.2 in the last window, against the +2 required. No online/sleep version is
+  proposed; this negative result is recorded.
+- **Classes stop mattering with data.** At 1 MB, classes give +2.0 points word-initial (words
+  alone +0.06). At 68 MB words alone give almost everything (+0.58) and classes add +0.04: with
+  enough data, the word contexts themselves are seen often enough.
+- **The word voters still help overall** at 68 MB: +0.6 top-1, −0.03 bits.
+- Lexicon: 602 045 chunk types at 68 MB (surprise chunks include fragments). Peak RSS ≈ 23 GB
+  for 4 pass-2 variants at once. Run time 1 001 s.
+
+**What I expected, and why it might fail** (written before the run):
 - At K = 8 the byte trie already covers "previous word + partial word" in child-directed speech
   (step 4: chunk depth was neutral at K = 8). So a gain has to come from `w−2` (10–15 bytes
   back) and from classes.

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 pub const DEPTHS: usize = 65;
 pub const EVIDENCE: usize = 24;
+/// Kinds of extra voters from outside the chain (e.g. the word level, `words.rs`).
+pub const EXTRA_KINDS: usize = 8;
 /// Largest step one byte may take on one θ (stability against rare huge gradients).
 const MAX_STEP: f64 = 0.5;
 
@@ -20,28 +22,38 @@ pub struct Mixer {
     theta: Vec<f64>,
 }
 
-pub fn bucket(depth: u32, total: f64) -> usize {
+fn evidence(total: f64) -> usize {
     let e = if total >= 1.0 {
         total.log2() as usize
     } else {
         0
     };
-    (depth as usize).min(DEPTHS - 1) * EVIDENCE + e.min(EVIDENCE - 1)
+    e.min(EVIDENCE - 1)
+}
+
+pub fn bucket(depth: u32, total: f64) -> usize {
+    (depth as usize).min(DEPTHS - 1) * EVIDENCE + evidence(total)
+}
+
+/// Buckets of extra voters sit after the chain's: one row of evidence buckets per kind.
+pub fn extra_bucket(kind: usize, total: f64) -> usize {
+    (DEPTHS + kind.min(EXTRA_KINDS - 1)) * EVIDENCE + evidence(total)
 }
 
 impl Mixer {
     /// Fill θ with the fixed weighting on first use (`cap` = depth whose weight stops doubling).
+    /// Extra voters start like a cell at depth `cap`. A shorter θ (an older save) is extended.
     pub fn ensure(&mut self, cap: u32) {
-        if !self.theta.is_empty() {
+        let n = (DEPTHS + EXTRA_KINDS) * EVIDENCE;
+        if self.theta.len() >= n {
             return;
         }
-        self.theta = (0..DEPTHS * EVIDENCE)
-            .map(|i| {
-                let (d, e) = ((i / EVIDENCE) as u32, i % EVIDENCE);
-                let t = (1u64 << e) as f64;
-                f64::from(d.min(cap)) * std::f64::consts::LN_2 + (t / (t + 2.0)).ln()
-            })
-            .collect();
+        let start = self.theta.len();
+        self.theta.extend((start..n).map(|i| {
+            let (d, e) = (((i / EVIDENCE) as u32).min(DEPTHS as u32), i % EVIDENCE);
+            let t = (1u64 << e) as f64;
+            f64::from(d.min(cap)) * std::f64::consts::LN_2 + (t / (t + 2.0)).ln()
+        }));
     }
 
     pub fn weight(&self, b: usize) -> f64 {

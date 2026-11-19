@@ -97,6 +97,30 @@ enum Cmd {
         #[arg(long, default_value_t = 5)]
         sweeps: usize,
     },
+    /// Offline word-level bound (step 8): pass 1 segments the corpus into chunks (Lucy's own
+    /// surprise or spaces) and clusters words Brown-style in hindsight; pass 2 reruns the tissue
+    /// with word voters mixed in (online counts). Prints top-1, bits, word-initial and rare
+    /// contexts for: tissue alone, + words, + words + classes.
+    WordBound {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Rule constants (JSON); the word voters need `ctx_mix`.
+        #[arg(long)]
+        params: Option<PathBuf>,
+        #[arg(long, value_parser = ["surprise", "space"], default_value = "surprise")]
+        boundary: String,
+        /// Surprise boundary: a byte above this many bits starts a chunk.
+        #[arg(long, default_value_t = 3.0)]
+        bits: f64,
+        #[arg(long, value_delimiter = ',', default_value = "256,1024")]
+        classes: Vec<usize>,
+        #[arg(long, default_value_t = 30_000)]
+        top_words: usize,
+        #[arg(long, default_value_t = 4096)]
+        top_next: usize,
+        #[arg(long, default_value_t = 4)]
+        sweeps: usize,
+    },
     /// Talk to a saved context tissue: each typed line is learned, then Lucy continues the
     /// text (her own bytes are context, never evidence). /sleep, /save, /quit; saves on exit.
     Talk {
@@ -597,6 +621,48 @@ fn main() -> Result<()> {
             let o = simulate(&a, &s, 0, Some(metrics_out(&metrics, &a)?), None)?;
             summary(&o);
             println!("pass 2 metrics -> {}", metrics.display());
+        }
+        Cmd::WordBound {
+            corpus,
+            params,
+            boundary,
+            bits,
+            classes,
+            top_words,
+            top_next,
+            sweeps,
+        } => {
+            let data =
+                fs::read(&corpus).with_context(|| format!("reading {}", corpus.display()))?;
+            let p: Params = match &params {
+                Some(path) => serde_json::from_str(&fs::read_to_string(path)?)
+                    .with_context(|| format!("parsing {}", path.display()))?,
+                None => Params::default(),
+            };
+            p.validate().map_err(anyhow::Error::msg)?;
+            ensure!(p.ctx_mix, "word-bound needs ctx_mix (learned mixing)");
+            let cfg = lucy_core::words::Config {
+                boundary: match boundary.as_str() {
+                    "space" => lucy_core::words::Boundary::Space,
+                    _ => lucy_core::words::Boundary::Surprise(bits),
+                },
+                classes,
+                top_words,
+                top_next,
+                sweeps,
+                prefix_cap: 24,
+            };
+            let t0 = Instant::now();
+            let (lexicon, vs) = lucy_core::words::word_bound(&data, &p, &cfg);
+            println!(
+                "{}  boundary {boundary}  lexicon {lexicon} chunk types  {:.0}s",
+                corpus.display(),
+                t0.elapsed().as_secs_f64()
+            );
+            for v in &vs {
+                println!("{:24} whole: {}", v.name, v.whole.line());
+                println!("{:24} last:  {}", "", v.last.line());
+            }
         }
         Cmd::Talk {
             resume,
