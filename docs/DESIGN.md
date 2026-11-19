@@ -771,7 +771,7 @@ Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 bes
 | 1b native, no decay | `277995d` | 70.5 % | 1.504 | 150 743 | — | sorted lists, lowest-byte ties |
 | 1b native, default (t_v 1e6, budget 2 M) | `277995d` | 70.3 % | 1.516 | 117 278 | ≈ 8 000–16 000 | still spikes into a 32-cell reservoir, which dominates the time |
 | 2 reservoir off the byte path | (2) | 70.3 % | 1.516 | 117 278 | ≈ 5 300–10 900 (whole run); 1 650 (tissue alone) | 1 MB in 8.2 s; the observatory's calibrator (2.4 µs) and 256 logits (1 µs) cost more than the tissue |
-| fix: growth gate on visits | (fix) | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
+| fix: growth gate on visits | `4303646` | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
 
 Decay timescale at 1 MB (no budget): `ctx_t_v` 3e5 → 69.9 % / 1.534 bits, 81 649 cells; 1e5 →
 68.6 % / 1.611, 42 478 cells. A budget of 65 536 cells costs 0.1–0.4 points at 1 MB
