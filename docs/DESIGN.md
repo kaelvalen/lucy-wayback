@@ -996,6 +996,75 @@ bound 73.87 % / 1.221 / 32.69 %.
   the cell's descendants in the forward direction). That needs chunk tracking (step 4) and costs
   more.
 
+### Step 8 (design for review, not built): word level, steps 4 + 5 combined
+
+**Why.** Step 5 showed that byte-level successor classes cannot say which word comes next: even
+the hindsight bound adds +0.2 points at word-initial bytes. Step 4 showed that Lucy's own
+surprise peaks segment the stream as well as spaces do. So: make words a level of their own,
+predict the next *word* from the previous words, back off to word classes, and feed that into
+the byte vote.
+
+**Level 2: word chunks.**
+- *Boundaries* come from Lucy's own surprise (`ctx_chunk = 2`, 3 bits); spaces are the reference
+  rule.
+- *Word identity* is a node of a **lexicon trie**: a prefix tree over the bytes since the chunk
+  start, sorted child lists, no hashing. Each byte inside a chunk moves one step down (O(1)).
+  At a boundary, the node reached is the completed word, and the walk restarts at the root.
+- The current node is also the **partial word**, which is what the vote inside a word needs.
+
+**Word contexts.**
+- A second suffix trie, over word ids instead of bytes, depth 1–2 words.
+- Each cell `(w−2, w−1)` counts its successor words, as lexicon nodes. Counting is online, at
+  boundaries, with the same vote weights, growth gate and decay as byte cells.
+
+**Word vote into the byte vote.**
+- At a byte position, the deepest word-context cell turns its successor words into a
+  next-byte distribution. Only words that extend the current partial word count, grouped by
+  their next byte.
+- At a word-initial position the partial word is empty, so the result is a distribution over
+  first letters.
+- This joins the byte vote as one extra voter at weight `w2 · T/(T+2) · 2^K / T` (`w2` swept),
+  like the class back-off.
+- Cost: O(1) lexicon step per byte, plus aggregating at most the top `M` (64) successors of one
+  cell, O(M · word length). It does not depend on the number of cells.
+
+**Word classes.**
+- Words are clustered by their neighbouring words with Brown-style exchange over word bigrams:
+  maximize `Σ N(c, w′) ln N(c, w′)/N(c)` for the next word w′ (the previous-word direction is
+  optional).
+- Class contexts `(c(w−1))` and `(c(w−2), c(w−1))` back off for word contexts seen < 3 times,
+  ahead of the shorter word context.
+
+**Offline bound first: `lucy word-bound`, the only thing to build after review.** Same shape as
+`class-bound`:
+1. Pass 1 runs the byte tissue online and records the word segmentation, by surprise and by
+   spaces.
+2. In hindsight, it builds the lexicon and clusters the words into k ∈ {256, 1024} classes.
+3. Pass 2 reruns the byte tissue with the word voter. Word-context and class-context counts are
+   online and prequential; only the class map is hindsight.
+
+Variants, each at 1 MB and 68 MB:
+- (a) word contexts only, no classes;
+- (b) + hindsight classes;
+- (c) the same with space boundaries.
+
+Each reports word-initial / inside / non-alphanumeric top-1, rare-context accuracy, top-1 and
+bits.
+
+**Decision rule.** Propose the online/sleep version (lexicon and classes formed in sleep) only
+if the bound with surprise boundaries clears **+2 points at word-initial bytes at 68 MB** (today
+32.1 %), with bits not worse. Otherwise stop here and record the negative result.
+
+**What I expect, and why it may fail.**
+- At K = 8 the byte trie already covers "previous word + partial word" in child-directed speech
+  (step 4: chunk depth was neutral at K = 8). So a gain has to come from `w−2` (10–15 bytes
+  back) and from classes.
+- Surprise chunks are not words: they also cut at surprising letters inside words and miss
+  predictable word starts. Words become noisier, with more types and fragments. Variant (c)
+  measures how much that costs.
+- CHILDES is repetitive and memorization covers a lot, so the gain may come out below +2 points.
+  The rule above then stops the work.
+
 ## Performance
 
 Profile (callgrind; `perf` needs `kernel.perf_event_paranoid ≤ 2`), CHILDES, before the work:
