@@ -20,6 +20,9 @@
 
 mod classes;
 mod mix;
+mod v04;
+
+pub use v04::ContextV04;
 
 pub use classes::ClassMap;
 use serde::{Deserialize, Serialize};

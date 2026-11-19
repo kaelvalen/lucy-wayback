@@ -142,6 +142,34 @@ impl Engine {
         Ok(())
     }
 
+    /// An engine from saved parts (format migrations, `save.rs`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        p: Params,
+        g: Graph,
+        senses: Senses,
+        ring: Ring,
+        stats: Stats,
+        sched: Scheduler,
+        plasticity: crate::plasticity::Plasticity,
+        now: u64,
+        ctx: crate::context::Context,
+    ) -> Self {
+        Self {
+            decay: rules::Decay::new(&p),
+            p,
+            g,
+            senses,
+            ring,
+            stats,
+            sched,
+            parallel: false,
+            plasticity,
+            now,
+            ctx,
+        }
+    }
+
     /// Rebuild state derived from `p` (not saved).
     pub(crate) fn rebuild_derived(&mut self) {
         self.decay = rules::Decay::new(&self.p);

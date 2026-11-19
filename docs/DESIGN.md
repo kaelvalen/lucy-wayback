@@ -433,6 +433,32 @@ it gives 70.5 % / 1.504 bits.
 
 ## Save/resume (`save.rs`)
 
+**Tissue continuity (2026-11-19, a core requirement).** Lucy must survive code updates.
+- Every save starts with `LUCYSV` and a two-digit format version (`save::CURRENT`, now 5).
+- Every layout change bumps the version and ships a migration v(N) → v(N+1). The changed
+  structs are frozen as they were on disk (`save/v04.rs`, `context/v04.rs`), with a `From` into
+  the new types.
+- New fields get values that reproduce the old behaviour. Format 4 → 5 sets `ctx_mix = false`
+  and leaves the mixer empty, so a format-4 tissue predicts exactly as before. If mixing is
+  turned on later, θ starts from the fixed weighting.
+- `save::load` migrates in memory and never writes the file. That covers `run --resume`
+  (which notes the migration) and `talk --resume`, which refuses to save over an older-format
+  original.
+- `lucy migrate in.bin out.bin` writes the current format and refuses `out == in`.
+- **Tests** (`tests/fixtures`, recipe in its README): one save per supported format, written
+  by that format's own binary, plus what that binary wrote when it resumed. Each fixture must
+  load, migrate and continue to the same metrics lines (minus wall clock). Turning mixing on in
+  the 4 → 5 migration fails this test. Unknown or older formats are rejected with a clear
+  message.
+- **Real wombs**, migrated in memory, reproduce their earlier name tests exactly:
+  - `womb-base.bin` (format 4, K 8): 0/20, same replies;
+  - `womb-k64.bin`: 15/20;
+  - `womb-k64v8.bin`: 8/20;
+  - control 0/20.
+- Formats 1–3 (`womb-cls.bin`, `womb-base-oldlayout.bin`) have no migration. Format 3 also
+  shared its magic with two layouts, which is why every change now gets its own version.
+
+
 `--save PATH` writes the whole run state at the end of the run, and also every `--save-every`
 bytes if that is set: engine (cells, edges, scheduler wheel + overflow heap + per-tick arenas,
 ring, senses, plasticity incl. anchors, logical clock), observatory (window counters, calibrator,
@@ -1124,8 +1150,8 @@ CHILDES 1 MB, K 64, whole run (scratch bench, the same calls as the engine):
 - talk: `--kael-weight` 50, `--recency` off;
 - the womb is `runs/v2/womb-mix4194304.bin` (save format `LUCYSV05`).
 
-Older wombs (`womb-base`, `womb-k64*`, `womb-cls`) predate the mixer and are rejected cleanly by
-the magic check.
+Format-4 wombs (`womb-base`, `womb-k64*`) migrate automatically (see Save/resume); `womb-cls` is
+format 3 and has no migration.
 
 ### Step 8: word level, steps 4 + 5 combined (offline bound built: `lucy word-bound`; online version not proposed)
 
@@ -1205,6 +1231,13 @@ Surprise boundaries at 3 bits.
 - **Decision rule not met.** At 68 MB the bound adds +0.6 points at word-initial bytes over the
   whole run and +1.2 in the last window, against the +2 required. No online/sleep version is
   proposed; this negative result is recorded.
+- **Space boundaries** (variant c, 68 MB, 103 368 word types against 602 045 surprise chunks):
+  - word-initial gains only +0.28 points over the whole run (+0.85 last window), also below
+    the rule;
+  - overall gains are larger than with surprise boundaries: +1.2 top-1 (74.16 → 75.37 %),
+    −0.068 bits (1.1993 → 1.1317), word-rare 31.27 → 36.28 %;
+  - so real words make better contexts, but they still do not predict the next word's first
+    letter well enough.
 - **Classes stop mattering with data.** At 1 MB, classes give +2.0 points word-initial (words
   alone +0.06). At 68 MB words alone give almost everything (+0.58) and classes add +0.04: with
   enough data, the word contexts themselves are seen often enough.

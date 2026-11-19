@@ -1,0 +1,491 @@
+*FAT: the cow likes there . *MOT: the cat goes there . *CHI: do you want the cow ?
+*MOT: do you want the dog ? *MOT: the dog has sleeping . *MOT: the dog has big .
+*FAT: the cat has on the table . *CHI: what is your shoe ? *MOT: the cat has there .
+*CHI: the cow goes hungry . *INV: what is a ball ? *CHI: who has a book ?
+*FAT: the duck has here . *MOT: a ball goes big . *INV: the cat has in the box .
+*FAT: a book has hungry . *MOT: the duck wants here . *MOT: the duck likes hungry .
+*FAT: your shoe is hungry . *FAT: where is a book ? *MOT: who has a ball ?
+*CHI: do you want the cat ? *CHI: the duck was sleeping . *FAT: your shoe likes sleeping .
+*CHI: what is a ball ? *CHI: the dog wants big . *FAT: what is the cow ?
+*FAT: your shoe was there . *INV: the cow wants sleeping . *INV: do you want the dog ?
+*CHI: what is a book ? *CHI: where is the cat ? *MOT: the cat goes there .
+*MOT: the cow was on the table . *FAT: a book is here . *INV: a book wants hungry .
+*FAT: where is your shoe ? *FAT: a ball has there . *CHI: your shoe was there .
+*FAT: the cat likes on the table . *FAT: your shoe was in the box . *CHI: my teddy was sleeping .
+*CHI: do you want your shoe ? *MOT: the duck wants on the table . *CHI: your shoe wants in the box .
+*FAT: where is my teddy ? *INV: what is a book ? *MOT: your shoe likes here .
+*MOT: my teddy wants big . *INV: your shoe is sleeping . *INV: the cat likes big .
+*CHI: the dog was hungry . *CHI: a book likes in the box . *CHI: a ball is there .
+*MOT: a ball wants red . *CHI: what is the duck ? *CHI: your shoe goes sleeping .
+*CHI: who has a book ? *INV: a ball has big . *MOT: a ball has there .
+*CHI: do you want the cat ? *MOT: do you want the cat ? *MOT: who has the dog ?
+*MOT: the dog is hungry . *FAT: my teddy likes on the table . *INV: a book has red .
+*FAT: my teddy wants big . *INV: do you want your shoe ? *MOT: the cow is red .
+*FAT: a ball likes in the box . *CHI: what is a book ? *CHI: the cat wants hungry .
+*CHI: my teddy was sleeping . *INV: what is your shoe ? *FAT: who has the dog ?
+*FAT: a book likes there . *INV: who has the cat ? *MOT: my teddy is here .
+*FAT: what is the duck ? *CHI: the duck wants big . *INV: the cat goes there .
+*CHI: the cat goes there . *MOT: the cat has red . *MOT: where is a book ?
+*MOT: do you want the duck ? *CHI: what is the cat ? *CHI: what is my teddy ?
+*FAT: my teddy goes hungry . *CHI: where is the duck ? *MOT: what is a book ?
+*CHI: the cat likes sleeping . *INV: the cow has on the table . *CHI: your shoe was big .
+*INV: the dog was there . *MOT: the duck wants big . *MOT: do you want the duck ?
+*CHI: the dog wants big . *CHI: where is the duck ? *FAT: your shoe was there .
+*FAT: what is the dog ? *FAT: do you want the duck ? *CHI: where is the cat ?
+*FAT: a ball wants there . *INV: who has my teddy ? *MOT: a ball likes sleeping .
+*FAT: a book was on the table . *CHI: do you want a ball ? *MOT: my teddy is there .
+*MOT: who has the cat ? *INV: the dog likes there . *CHI: the dog wants here .
+*MOT: the cat likes hungry . *FAT: the duck was red . *CHI: a book wants sleeping .
+*MOT: the duck is red . *MOT: your shoe goes on the table . *CHI: where is a book ?
+*FAT: the cat likes red . *INV: who has a book ? *INV: the cat has red .
+*FAT: a book is on the table . *INV: do you want the duck ? *INV: what is the cat ?
+*MOT: who has your shoe ? *CHI: the duck is in the box . *CHI: a book wants there .
+*CHI: do you want a book ? *INV: what is the cow ? *FAT: where is your shoe ?
+*MOT: who has the cow ? *MOT: my teddy likes there . *FAT: where is the cow ?
+*INV: the cat goes sleeping . *FAT: the duck is there . *FAT: a ball was on the table .
+*INV: my teddy goes sleeping . *MOT: the cow has red . *MOT: do you want a book ?
+*CHI: the duck wants there . *CHI: do you want your shoe ? *FAT: who has the cow ?
+*CHI: do you want the cat ? *CHI: the cat was hungry . *CHI: your shoe wants sleeping .
+*CHI: my teddy is big . *FAT: your shoe was in the box . *FAT: my teddy is sleeping .
+*INV: my teddy wants on the table . *FAT: a book goes in the box . *CHI: my teddy is on the table .
+*CHI: do you want the cow ? *FAT: the dog was there . *INV: a book has hungry .
+*MOT: do you want a book ? *CHI: my teddy was big . *MOT: a book is there .
+*MOT: my teddy has there . *FAT: the duck has sleeping . *MOT: who has my teddy ?
+*INV: where is the dog ? *FAT: the duck goes red . *INV: my teddy is sleeping .
+*FAT: what is a book ? *INV: what is the cow ? *FAT: where is your shoe ?
+*INV: do you want my teddy ? *MOT: the cat was hungry . *CHI: what is my teddy ?
+*INV: who has the cat ? *INV: my teddy wants sleeping . *MOT: a ball wants there .
+*CHI: what is the cow ? *MOT: a ball wants hungry . *FAT: the cat was in the box .
+*CHI: do you want the dog ? *FAT: the cow goes in the box . *INV: where is the cat ?
+*FAT: do you want the cat ? *CHI: who has the cow ? *MOT: do you want my teddy ?
+*FAT: a book was in the box . *FAT: a book is sleeping . *CHI: the cow is sleeping .
+*MOT: the dog goes red . *MOT: your shoe goes on the table . *FAT: the dog goes in the box .
+*FAT: where is the dog ? *CHI: do you want the cow ? *FAT: a book was hungry .
+*CHI: who has a ball ? *CHI: who has a book ? *FAT: the cat has red .
+*INV: my teddy wants here . *MOT: your shoe was sleeping . *MOT: the duck has here .
+*CHI: do you want a book ? *CHI: do you want a book ? *CHI: the cat goes on the table .
+*FAT: your shoe goes on the table . *CHI: a ball was red . *CHI: what is your shoe ?
+*MOT: what is my teddy ? *MOT: the dog is there . *INV: my teddy wants in the box .
+*MOT: my teddy is there . *CHI: my teddy is in the box . *CHI: the duck likes there .
+*MOT: your shoe was there . *FAT: where is my teddy ? *FAT: what is the dog ?
+*FAT: your shoe was on the table . *MOT: do you want a book ? *MOT: the cow likes big .
+*MOT: the cow likes on the table . *INV: the duck wants there . *FAT: your shoe wants sleeping .
+*MOT: your shoe likes red . *INV: my teddy is sleeping . *CHI: the cat wants in the box .
+*INV: a ball is there . *CHI: the cow is in the box . *CHI: who has a ball ?
+*CHI: the cat wants hungry . *CHI: where is a book ? *FAT: do you want the cat ?
+*CHI: my teddy has sleeping . *CHI: a ball has red . *MOT: what is the cow ?
+*FAT: what is my teddy ? *MOT: the dog likes in the box . *MOT: do you want the duck ?
+*INV: what is the cow ? *INV: a book has hungry . *CHI: do you want a book ?
+*CHI: a book was hungry . *INV: what is your shoe ? *INV: do you want the dog ?
+*MOT: the cat likes in the box . *MOT: do you want a ball ? *MOT: the cat was big .
+*INV: what is my teddy ? *MOT: the duck was in the box . *FAT: a book was on the table .
+*INV: who has my teddy ? *FAT: what is a ball ? *INV: who has your shoe ?
+*INV: who has the cat ? *MOT: your shoe wants here . *FAT: the cow likes in the box .
+*FAT: who has a ball ? *FAT: where is a book ? *CHI: where is the duck ?
+*FAT: who has the dog ? *MOT: who has the cow ? *INV: the dog was hungry .
+*CHI: the dog is there . *MOT: the duck is in the box . *CHI: the duck has big .
+*CHI: do you want a ball ? *CHI: what is a ball ? *INV: what is the duck ?
+*INV: the dog is in the box . *INV: a book was big . *MOT: where is the cow ?
+*CHI: where is the cat ? *MOT: my teddy was sleeping . *CHI: the cow has big .
+*FAT: where is a book ? *MOT: do you want a book ? *MOT: a book was red .
+*MOT: where is the cat ? *FAT: the duck likes there . *FAT: the cow likes on the table .
+*FAT: my teddy is there . *CHI: what is my teddy ? *CHI: your shoe was sleeping .
+*FAT: the cow likes hungry . *INV: the dog is sleeping . *CHI: the duck was sleeping .
+*MOT: a ball was there . *MOT: what is your shoe ? *CHI: the dog is big .
+*MOT: the dog is in the box . *CHI: the cat likes sleeping . *MOT: what is the cat ?
+*MOT: where is the duck ? *INV: where is my teddy ? *FAT: do you want the duck ?
+*MOT: who has the dog ? *FAT: a book goes there . *INV: where is your shoe ?
+*INV: my teddy likes here . *FAT: where is my teddy ? *FAT: the dog is in the box .
+*INV: what is a book ? *FAT: the duck has big . *FAT: my teddy wants big .
+*MOT: the cat wants here . *FAT: do you want the cow ? *MOT: the dog goes red .
+*FAT: what is the cow ? *CHI: a ball has there . *FAT: a ball wants in the box .
+*CHI: the duck has red . *CHI: what is my teddy ? *FAT: what is a ball ?
+*CHI: your shoe was red . *FAT: the duck likes here . *CHI: the cat was sleeping .
+*CHI: the duck likes on the table . *INV: where is the cat ? *FAT: do you want a book ?
+*MOT: do you want my teddy ? *FAT: a ball goes sleeping . *MOT: the cow likes sleeping .
+*CHI: my teddy likes big . *MOT: your shoe goes here . *INV: do you want a ball ?
+*FAT: a book wants there . *INV: a ball likes in the box . *MOT: do you want the cat ?
+*MOT: what is a ball ? *CHI: the cat has hungry . *CHI: the dog likes in the box .
+*FAT: a book was big . *INV: the cat likes in the box . *MOT: do you want the cow ?
+*MOT: do you want the cow ? *FAT: the cat was on the table . *INV: my teddy wants hungry .
+*CHI: where is my teddy ? *INV: my teddy was in the box . *INV: the duck has big .
+*INV: what is the duck ? *INV: the cow likes big . *INV: who has your shoe ?
+*CHI: your shoe wants hungry . *INV: the cat likes in the box . *CHI: the cow is here .
+*FAT: a ball has in the box . *MOT: my teddy is on the table . *FAT: a ball was big .
+*INV: what is my teddy ? *INV: a ball has here . *FAT: what is the cat ?
+*INV: the cat has here . *FAT: a ball wants hungry . *MOT: a ball likes hungry .
+*CHI: the dog was in the box . *INV: a book likes on the table . *INV: do you want the cat ?
+*CHI: the dog is there . *FAT: the cat has hungry . *INV: a ball is red .
+*INV: your shoe is in the box . *FAT: my teddy goes sleeping . *FAT: the dog goes on the table .
+*FAT: the cow goes on the table . *FAT: a book is in the box . *CHI: who has a ball ?
+*MOT: the dog wants sleeping . *MOT: where is the dog ? *MOT: do you want the dog ?
+*INV: the cat was there . *INV: a ball is big . *MOT: the cat likes there .
+*FAT: a ball goes on the table . *FAT: where is your shoe ? *MOT: the dog wants there .
+*MOT: the cow has sleeping . *INV: do you want a ball ? *INV: the cat is hungry .
+*CHI: the dog wants there . *MOT: the cat is red . *MOT: where is the duck ?
+*CHI: a ball is in the box . *CHI: the cat goes hungry . *INV: the duck is there .
+*MOT: where is the cow ? *FAT: what is a book ? *MOT: do you want a book ?
+*CHI: where is your shoe ? *CHI: the cow wants sleeping . *INV: your shoe goes on the table .
+*MOT: your shoe has there . *CHI: the duck has sleeping . *CHI: do you want my teddy ?
+*INV: where is your shoe ? *FAT: what is the dog ? *FAT: a ball goes hungry .
+*FAT: a book wants red . *CHI: where is the cow ? *INV: the duck has there .
+*INV: the cat has in the box . *MOT: who has your shoe ? *INV: my teddy was red .
+*CHI: who has your shoe ? *FAT: a ball was there . *INV: where is your shoe ?
+*INV: a ball goes there . *FAT: where is the cat ? *MOT: do you want my teddy ?
+*FAT: the duck wants here . *INV: a ball goes there . *FAT: what is the cow ?
+*MOT: where is your shoe ? *INV: the cat has sleeping . *MOT: the cat goes in the box .
+*CHI: the cow was hungry . *CHI: what is my teddy ? *CHI: who has your shoe ?
+*MOT: the dog is on the table . *INV: what is your shoe ? *MOT: the duck has hungry .
+*MOT: your shoe goes sleeping . *MOT: do you want a ball ? *INV: what is the dog ?
+*INV: my teddy is big . *CHI: who has a ball ? *INV: the cow is here .
+*INV: your shoe was hungry . *MOT: a ball goes red . *MOT: do you want a ball ?
+*INV: the duck wants sleeping . *CHI: who has the duck ? *FAT: the duck wants here .
+*FAT: a book is big . *MOT: my teddy has hungry . *FAT: what is your shoe ?
+*INV: my teddy was here . *INV: what is the dog ? *FAT: where is a book ?
+*FAT: a book is on the table . *CHI: where is the cow ? *CHI: what is a ball ?
+*CHI: my teddy likes big . *CHI: the cat has hungry . *FAT: what is my teddy ?
+*FAT: where is the cow ? *MOT: your shoe goes on the table . *INV: do you want a book ?
+*CHI: the duck was big . *FAT: who has the dog ? *FAT: a book has here .
+*MOT: what is your shoe ? *INV: the dog goes here . *INV: the dog has big .
+*MOT: where is my teddy ? *CHI: who has the duck ? *MOT: what is the duck ?
+*MOT: a book has red . *INV: where is a ball ? *MOT: do you want a book ?
+*FAT: where is the cow ? *CHI: my teddy was big . *INV: a ball is sleeping .
+*INV: the dog wants there . *FAT: what is your shoe ? *INV: your shoe wants there .
+*FAT: your shoe was sleeping . *MOT: what is the cat ? *FAT: the dog was big .
+*INV: a book likes there . *MOT: who has the duck ? *MOT: the duck is there .
+*INV: where is the duck ? *MOT: what is the cat ? *MOT: the duck is hungry .
+*CHI: a ball goes sleeping . *FAT: where is the duck ? *INV: my teddy likes sleeping .
+*CHI: your shoe wants on the table . *INV: the duck is red . *FAT: do you want the cow ?
+*MOT: a ball was in the box . *FAT: the duck was on the table . *MOT: a ball has here .
+*FAT: the dog has sleeping . *INV: where is my teddy ? *CHI: your shoe was red .
+*FAT: the cat likes hungry . *FAT: a ball wants here . *MOT: the cat wants sleeping .
+*CHI: the duck has here . *INV: a book goes in the box . *FAT: do you want your shoe ?
+*MOT: a book wants hungry . *FAT: who has a ball ? *INV: my teddy is in the box .
+*FAT: my teddy goes red . *INV: the dog is there . *FAT: a book goes on the table .
+*INV: the cow wants hungry . *FAT: who has a book ? *MOT: my teddy is sleeping .
+*FAT: a ball was sleeping . *INV: your shoe likes here . *CHI: who has the cat ?
+*FAT: the cat likes on the table . *FAT: the cow likes big . *FAT: my teddy has red .
+*INV: where is your shoe ? *MOT: the dog is on the table . *MOT: the cow is there .
+*MOT: do you want the duck ? *CHI: the cow has here . *CHI: where is the dog ?
+*MOT: do you want a book ? *INV: the dog likes there . *FAT: what is your shoe ?
+*FAT: who has the cat ? *MOT: do you want the cow ? *MOT: do you want the dog ?
+*INV: what is my teddy ? *CHI: what is your shoe ? *MOT: a book goes sleeping .
+*FAT: a book is red . *INV: my teddy wants on the table . *INV: a book is red .
+*MOT: who has the cow ? *CHI: who has the cow ? *FAT: do you want your shoe ?
+*INV: the cat wants in the box . *CHI: do you want the duck ? *FAT: where is the duck ?
+*MOT: what is my teddy ? *CHI: who has a ball ? *INV: my teddy was in the box .
+*FAT: do you want the cow ? *CHI: do you want my teddy ? *CHI: a ball likes on the table .
+*INV: your shoe has red . *INV: my teddy was here . *MOT: the duck likes sleeping .
+*MOT: a ball goes there . *INV: a ball was in the box . *CHI: the cat is in the box .
+*FAT: who has the cat ? *CHI: do you want the duck ? *FAT: a book likes big .
+*FAT: who has your shoe ? *INV: do you want my teddy ? *INV: where is a ball ?
+*FAT: what is the dog ? *INV: what is the cow ? *CHI: a ball wants there .
+*FAT: a ball has red . *INV: the duck wants in the box . *MOT: who has the dog ?
+*MOT: the cat is in the box . *CHI: your shoe likes here . *INV: the cow likes red .
+*FAT: your shoe wants hungry . *FAT: a book has there . *CHI: a ball wants red .
+*MOT: the duck was big . *CHI: my teddy is big . *FAT: where is my teddy ?
+*FAT: do you want a book ? *CHI: the dog has hungry . *CHI: your shoe likes on the table .
+*CHI: a ball has red . *FAT: the cat has sleeping . *CHI: a ball has hungry .
+*INV: the cat likes on the table . *MOT: what is the dog ? *MOT: the duck was here .
+*FAT: the cat was in the box . *INV: your shoe goes big . *MOT: do you want a book ?
+*MOT: your shoe likes on the table . *MOT: the cow wants red . *FAT: where is the duck ?
+*FAT: the cat was there . *MOT: a ball goes in the box . *CHI: a ball is on the table .
+*FAT: who has your shoe ? *CHI: who has the duck ? *CHI: where is the cow ?
+*MOT: a book wants hungry . *CHI: the cat was red . *CHI: do you want the cat ?
+*MOT: a book was red . *FAT: do you want a ball ? *FAT: where is the cow ?
+*FAT: where is a ball ? *CHI: where is a book ? *FAT: a book is in the box .
+*INV: a ball wants here . *MOT: your shoe has on the table . *INV: a book likes big .
+*FAT: the dog was red . *INV: a ball likes in the box . *INV: what is a book ?
+*INV: what is a ball ? *CHI: the cat was on the table . *MOT: who has a book ?
+*CHI: my teddy has here . *MOT: the cat wants big . *MOT: the cat wants sleeping .
+*CHI: my teddy has hungry . *MOT: where is the cow ? *CHI: where is the dog ?
+*CHI: the cat likes big . *INV: the cat has red . *MOT: your shoe was in the box .
+*FAT: the dog goes here . *CHI: who has a book ? *MOT: your shoe is in the box .
+*FAT: the cat is red . *FAT: do you want the dog ? *INV: where is a book ?
+*MOT: who has a ball ? *CHI: the duck likes sleeping . *CHI: the duck has on the table .
+*INV: who has a ball ? *INV: the dog is here . *CHI: the cow wants big .
+*INV: where is your shoe ? *FAT: the duck was there . *CHI: who has a book ?
+*FAT: the cow goes in the box . *MOT: do you want your shoe ? *CHI: do you want the dog ?
+*CHI: a ball goes sleeping . *FAT: who has your shoe ? *CHI: the dog has here .
+*CHI: the cat goes on the table . *CHI: a ball likes here . *FAT: your shoe likes in the box .
+*CHI: do you want your shoe ? *MOT: your shoe wants in the box . *CHI: your shoe was big .
+*CHI: do you want the cow ? *INV: who has a ball ? *MOT: who has the duck ?
+*FAT: what is the cat ? *CHI: who has a book ? *FAT: the cow likes here .
+*INV: what is the duck ? *FAT: a ball likes on the table . *CHI: my teddy is sleeping .
+*INV: who has the cat ? *CHI: where is a ball ? *MOT: who has a ball ?
+*MOT: where is your shoe ? *MOT: who has the dog ? *INV: your shoe was there .
+*INV: the cat likes in the box . *INV: the cow goes hungry . *MOT: who has your shoe ?
+*MOT: your shoe was here . *MOT: what is the cat ? *FAT: the cow goes big .
+*FAT: who has a book ? *MOT: the duck likes hungry . *FAT: who has a ball ?
+*FAT: do you want the cat ? *FAT: what is the cow ? *MOT: a ball is there .
+*CHI: a ball goes in the box . *CHI: a ball has there . *FAT: my teddy wants hungry .
+*CHI: your shoe wants hungry . *CHI: where is the cat ? *MOT: do you want your shoe ?
+*MOT: do you want the cow ? *INV: my teddy is on the table . *MOT: do you want my teddy ?
+*CHI: who has the cow ? *FAT: do you want my teddy ? *CHI: the duck was on the table .
+*FAT: where is a book ? *CHI: do you want my teddy ? *MOT: my teddy likes in the box .
+*MOT: a book was sleeping . *CHI: the duck likes there . *MOT: where is a ball ?
+*FAT: who has the cat ? *CHI: the cow is sleeping . *FAT: the cow goes there .
+*CHI: where is the dog ? *CHI: my teddy has sleeping . *MOT: the dog goes here .
+*MOT: do you want a ball ? *INV: what is a ball ? *MOT: a book is in the box .
+*CHI: my teddy likes here . *FAT: the dog goes on the table . *MOT: my teddy has there .
+*INV: your shoe goes there . *FAT: a book has on the table . *FAT: the duck wants sleeping .
+*FAT: the cow was sleeping . *INV: a ball likes there . *CHI: the duck likes sleeping .
+*CHI: the cat is there . *MOT: your shoe likes hungry . *FAT: the dog wants hungry .
+*FAT: the cow was sleeping . *FAT: the cow has on the table . *FAT: what is the duck ?
+*FAT: a book likes in the box . *INV: a ball is in the box . *CHI: your shoe was big .
+*CHI: a book was there . *FAT: do you want the cat ? *INV: who has the cow ?
+*MOT: who has a book ? *MOT: who has a book ? *MOT: a book likes big .
+*CHI: what is your shoe ? *INV: my teddy has in the box . *FAT: the duck is red .
+*MOT: the dog has big . *FAT: the duck goes on the table . *CHI: do you want the cat ?
+*INV: my teddy was sleeping . *FAT: your shoe is hungry . *INV: who has the cow ?
+*INV: the duck goes red . *INV: a ball has red . *FAT: what is your shoe ?
+*MOT: do you want the cow ? *INV: a book likes there . *MOT: a book wants sleeping .
+*INV: a ball is hungry . *INV: the dog likes red . *CHI: the dog likes on the table .
+*FAT: a book is here . *CHI: the dog is hungry . *MOT: my teddy has hungry .
+*MOT: my teddy likes in the box . *INV: the cow has big . *INV: a ball goes in the box .
+*CHI: the dog was on the table . *FAT: do you want the duck ? *FAT: the cow likes there .
+*FAT: do you want the cow ? *FAT: what is the dog ? *CHI: your shoe wants hungry .
+*CHI: who has my teddy ? *INV: the dog likes in the box . *MOT: the cow has in the box .
+*MOT: do you want the duck ? *CHI: a book wants hungry . *CHI: the dog was sleeping .
+*MOT: where is a book ? *CHI: what is a book ? *CHI: the duck was big .
+*CHI: my teddy has here . *INV: where is the dog ? *INV: who has a book ?
+*INV: where is a ball ? *MOT: do you want the duck ? *CHI: your shoe likes big .
+*FAT: your shoe has red . *CHI: my teddy wants there . *FAT: who has my teddy ?
+*MOT: what is a ball ? *INV: do you want the cat ? *MOT: the cat likes red .
+*MOT: who has the dog ? *INV: the cat was hungry . *FAT: the cat was big .
+*INV: what is the duck ? *MOT: the cat is in the box . *CHI: the duck is big .
+*FAT: do you want my teddy ? *FAT: a ball is on the table . *MOT: a book is here .
+*CHI: a book is there . *MOT: the cat wants big . *INV: your shoe is in the box .
+*CHI: where is your shoe ? *MOT: a book goes big . *FAT: what is the cat ?
+*CHI: the cat goes hungry . *CHI: where is the duck ? *FAT: the duck wants red .
+*CHI: my teddy is there . *MOT: a book likes red . *CHI: what is a ball ?
+*FAT: the cow wants here . *FAT: the cat is red . *CHI: where is my teddy ?
+*MOT: the cat is red . *CHI: your shoe is hungry . *CHI: do you want the cow ?
+*MOT: what is a ball ? *CHI: who has a ball ? *CHI: what is your shoe ?
+*MOT: a book is hungry . *FAT: the cat was there . *FAT: the cat likes in the box .
+*CHI: a book likes hungry . *CHI: who has the dog ? *INV: a ball wants sleeping .
+*FAT: the cat is on the table . *CHI: do you want my teddy ? *INV: the dog wants sleeping .
+*FAT: the cow is red . *FAT: the cow goes there . *FAT: the dog is hungry .
+*INV: the duck wants big . *FAT: the cat goes sleeping . *INV: the duck goes here .
+*FAT: do you want the cow ? *CHI: where is the cow ? *CHI: who has a ball ?
+*FAT: who has the cow ? *FAT: my teddy was sleeping . *MOT: what is the cat ?
+*CHI: the duck likes in the box . *MOT: the cow was on the table . *INV: who has a book ?
+*FAT: your shoe goes sleeping . *MOT: a book wants in the box . *MOT: where is the cow ?
+*INV: what is a book ? *MOT: a book was there . *FAT: where is the cow ?
+*CHI: the duck likes red . *FAT: the dog wants sleeping . *MOT: the cow wants in the box .
+*FAT: do you want the dog ? *FAT: my teddy has there . *CHI: what is the duck ?
+*MOT: the cow goes big . *FAT: do you want my teddy ? *FAT: the cow is on the table .
+*FAT: do you want a book ? *FAT: do you want the cow ? *CHI: your shoe is big .
+*FAT: a book likes sleeping . *MOT: who has the cow ? *FAT: the cat goes hungry .
+*MOT: who has your shoe ? *FAT: what is the cat ? *MOT: the cow likes here .
+*FAT: what is the cat ? *INV: who has the cow ? *INV: your shoe goes big .
+*CHI: the cow likes on the table . *CHI: where is the cow ? *MOT: my teddy has sleeping .
+*INV: who has a ball ? *CHI: what is the cat ? *FAT: the cow goes big .
+*INV: the duck likes here . *FAT: my teddy goes here . *FAT: the cat goes there .
+*MOT: who has my teddy ? *MOT: a ball wants on the table . *MOT: the dog is hungry .
+*MOT: the duck likes in the box . *FAT: my teddy was red . *FAT: the dog was big .
+*MOT: the duck wants in the box . *MOT: the duck likes here . *MOT: the cow was there .
+*FAT: your shoe likes on the table . *MOT: a ball wants hungry . *INV: what is the cat ?
+*INV: what is the cat ? *MOT: my teddy likes red . *FAT: who has the dog ?
+*MOT: what is the cow ? *MOT: the duck has in the box . *CHI: your shoe goes on the table .
+*MOT: what is your shoe ? *INV: a book is in the box . *MOT: your shoe wants hungry .
+*MOT: your shoe wants big . *MOT: the duck has sleeping . *CHI: where is my teddy ?
+*FAT: the cow likes sleeping . *CHI: the cow was big . *MOT: do you want the dog ?
+*MOT: the cat wants there . *CHI: the cat goes in the box . *INV: my teddy is red .
+*CHI: the cow is here . *CHI: a book wants hungry . *MOT: the dog wants big .
+*INV: my teddy likes hungry . *INV: the cat wants sleeping . *MOT: my teddy is sleeping .
+*CHI: the dog was here . *CHI: the dog wants there . *INV: what is the dog ?
+*INV: what is a book ? *MOT: the cat likes here . *CHI: what is your shoe ?
+*MOT: the cow is here . *MOT: the cat has here . *MOT: the duck wants sleeping .
+*MOT: my teddy is big . *INV: what is the cow ? *MOT: the cat has in the box .
+*MOT: what is the cat ? *MOT: who has the duck ? *FAT: who has my teddy ?
+*MOT: where is the cat ? *CHI: a book wants red . *MOT: the dog likes there .
+*CHI: the cow is big . *FAT: a ball goes on the table . *FAT: do you want the cat ?
+*CHI: a book has in the box . *FAT: the dog wants there . *FAT: who has your shoe ?
+*MOT: my teddy goes here . *CHI: who has the cow ? *FAT: where is a book ?
+*CHI: where is my teddy ? *INV: the cat likes red . *CHI: where is the duck ?
+*INV: a ball has hungry . *CHI: the duck wants red . *FAT: where is the cat ?
+*CHI: a ball likes here . *MOT: the duck is here . *MOT: the cat goes here .
+*CHI: a book likes on the table . *INV: where is the duck ? *FAT: what is a book ?
+*MOT: a book goes in the box . *CHI: what is the cat ? *CHI: your shoe goes there .
+*CHI: where is a ball ? *FAT: a ball is big . *INV: where is the cow ?
+*FAT: my teddy is here . *FAT: what is your shoe ? *FAT: a ball was in the box .
+*FAT: what is the cat ? *CHI: a ball goes sleeping . *MOT: what is my teddy ?
+*INV: my teddy likes hungry . *FAT: the dog is sleeping . *FAT: where is a book ?
+*INV: the cat wants hungry . *MOT: a book wants big . *CHI: the dog is red .
+*MOT: do you want a book ? *CHI: the dog is red . *INV: the cow is there .
+*INV: my teddy has big . *FAT: where is a book ? *FAT: a book likes big .
+*MOT: your shoe is red . *FAT: your shoe is here . *INV: a ball has there .
+*MOT: the dog has red . *INV: a ball likes in the box . *CHI: who has the dog ?
+*FAT: a ball likes red . *MOT: the cat wants red . *MOT: what is my teddy ?
+*FAT: my teddy is sleeping . *MOT: the dog goes hungry . *CHI: who has a book ?
+*CHI: my teddy was hungry . *CHI: do you want the duck ? *CHI: your shoe is sleeping .
+*CHI: where is your shoe ? *CHI: where is a ball ? *FAT: a book has sleeping .
+*CHI: where is the duck ? *INV: what is a ball ? *FAT: the dog was red .
+*INV: do you want the cow ? *FAT: my teddy was on the table . *INV: do you want the cat ?
+*MOT: the cat goes big . *CHI: the cow goes here . *INV: who has my teddy ?
+*INV: who has the cow ? *CHI: the duck likes red . *INV: who has the cat ?
+*MOT: a book was in the box . *MOT: your shoe likes big . *INV: my teddy wants here .
+*CHI: the cow was red . *FAT: your shoe wants hungry . *FAT: what is my teddy ?
+*FAT: what is the cow ? *INV: a book has hungry . *FAT: your shoe goes sleeping .
+*FAT: do you want the dog ? *CHI: where is the duck ? *CHI: my teddy goes on the table .
+*FAT: where is a book ? *MOT: where is the cow ? *FAT: where is a ball ?
+*MOT: the dog was red . *CHI: what is the dog ? *MOT: where is my teddy ?
+*CHI: the cat has in the box . *FAT: do you want the duck ? *FAT: where is the duck ?
+*CHI: where is the dog ? *FAT: who has your shoe ? *INV: where is a ball ?
+*INV: where is my teddy ? *FAT: a book is here . *CHI: do you want a book ?
+*CHI: a book has sleeping . *CHI: what is the cat ? *INV: who has the cow ?
+*FAT: the dog was there . *CHI: my teddy likes hungry . *CHI: my teddy goes on the table .
+*CHI: what is a book ? *FAT: the duck wants in the box . *FAT: who has the cat ?
+*FAT: what is a ball ? *CHI: my teddy wants there . *CHI: who has a book ?
+*FAT: the cat likes here . *INV: the cat goes red . *INV: do you want the cow ?
+*FAT: your shoe has there . *MOT: the cat likes on the table . *CHI: what is the cat ?
+*INV: the dog goes here . *FAT: the cat was sleeping . *MOT: the dog is on the table .
+*CHI: the cat goes big . *INV: what is the cow ? *INV: your shoe is red .
+*INV: the cat is on the table . *INV: a ball has on the table . *INV: what is a ball ?
+*CHI: a book is in the box . *CHI: do you want a ball ? *FAT: who has my teddy ?
+*INV: where is my teddy ? *FAT: who has the dog ? *MOT: your shoe was in the box .
+*FAT: the duck goes in the box . *INV: where is my teddy ? *MOT: the cow likes red .
+*MOT: a ball was on the table . *FAT: your shoe wants sleeping . *FAT: who has the dog ?
+*FAT: a ball goes big . *MOT: a book goes hungry . *INV: my teddy likes in the box .
+*FAT: where is the cat ? *FAT: the dog was in the box . *MOT: a book likes there .
+*CHI: the cow goes hungry . *INV: do you want your shoe ? *FAT: the duck likes in the box .
+*MOT: the cat wants hungry . *INV: what is my teddy ? *CHI: who has the cat ?
+*MOT: the cow is big . *INV: a ball has on the table . *FAT: where is my teddy ?
+*FAT: the cow was sleeping . *MOT: my teddy goes on the table . *FAT: a ball wants there .
+*CHI: the cow has big . *CHI: where is your shoe ? *MOT: my teddy has there .
+*CHI: a ball has red . *CHI: do you want the dog ? *INV: who has the duck ?
+*CHI: a book is here . *MOT: a ball likes red . *FAT: what is my teddy ?
+*CHI: my teddy has here . *INV: my teddy goes sleeping . *MOT: the dog wants here .
+*MOT: the cow was in the box . *INV: what is your shoe ? *INV: my teddy was red .
+*CHI: your shoe has sleeping . *FAT: what is a book ? *MOT: who has the cat ?
+*FAT: do you want a book ? *INV: the duck wants red . *INV: a ball has big .
+*CHI: do you want the cat ? *INV: do you want your shoe ? *FAT: the cow likes big .
+*INV: the dog is hungry . *FAT: the cow wants on the table . *CHI: the dog likes big .
+*FAT: the cow goes red . *FAT: a ball has sleeping . *CHI: what is the dog ?
+*FAT: a book wants on the table . *FAT: the dog goes in the box . *INV: who has the cow ?
+*FAT: do you want the cat ? *FAT: the dog goes in the box . *FAT: a ball likes sleeping .
+*MOT: what is the dog ? *CHI: what is my teddy ? *MOT: the cat likes here .
+*CHI: the cat was sleeping . *CHI: do you want the cow ? *INV: what is a ball ?
+*FAT: where is a ball ? *MOT: who has a ball ? *MOT: the cat was red .
+*FAT: my teddy goes here . *INV: do you want the duck ? *INV: where is a ball ?
+*CHI: what is your shoe ? *MOT: the dog wants there . *INV: the dog has in the box .
+*INV: a ball is big . *INV: do you want a ball ? *MOT: the dog goes sleeping .
+*CHI: the cow goes hungry . *CHI: do you want my teddy ? *FAT: my teddy likes there .
+*FAT: who has your shoe ? *CHI: a book goes here . *INV: the dog was sleeping .
+*MOT: the duck has sleeping . *MOT: what is the cat ? *INV: where is the cow ?
+*INV: the duck is hungry . *FAT: do you want the duck ? *CHI: who has the duck ?
+*FAT: do you want the duck ? *INV: your shoe wants hungry . *MOT: what is the duck ?
+*MOT: a ball goes sleeping . *CHI: where is a book ? *INV: where is the dog ?
+*CHI: a book likes here . *FAT: what is a ball ? *MOT: the duck goes big .
+*CHI: my teddy wants red . *FAT: where is my teddy ? *CHI: the duck is sleeping .
+*INV: do you want a book ? *FAT: the cow was hungry . *INV: my teddy goes big .
+*MOT: the cow was big . *INV: the duck has in the box . *MOT: your shoe was in the box .
+*MOT: where is a ball ? *INV: your shoe wants big . *FAT: your shoe was hungry .
+*MOT: a book likes in the box . *FAT: my teddy has big . *FAT: what is the duck ?
+*FAT: my teddy likes here . *INV: where is my teddy ? *MOT: my teddy likes here .
+*FAT: my teddy likes there . *FAT: do you want the cat ? *FAT: where is the cow ?
+*FAT: a ball is red . *CHI: my teddy is red . *MOT: who has the cow ?
+*INV: the dog is sleeping . *MOT: the duck has big . *INV: where is the dog ?
+*MOT: the cow was in the box . *FAT: your shoe goes on the table . *CHI: what is a ball ?
+*MOT: the cat was on the table . *MOT: the cow wants there . *MOT: what is my teddy ?
+*MOT: who has my teddy ? *MOT: the cow wants in the box . *INV: my teddy likes there .
+*INV: my teddy is big . *CHI: where is your shoe ? *MOT: where is the cow ?
+*FAT: do you want my teddy ? *CHI: do you want your shoe ? *MOT: the cow was there .
+*INV: what is the dog ? *FAT: your shoe is here . *CHI: a ball was red .
+*INV: do you want the cat ? *CHI: the dog likes red . *INV: do you want the cat ?
+*FAT: your shoe was on the table . *FAT: do you want the cow ? *INV: where is the cat ?
+*MOT: the duck likes here . *INV: a book goes red . *MOT: a book has hungry .
+*FAT: do you want a ball ? *CHI: do you want a ball ? *MOT: the dog likes here .
+*MOT: my teddy is red . *FAT: who has the cow ? *FAT: do you want a book ?
+*CHI: where is the cow ? *CHI: a ball likes on the table . *MOT: do you want the cat ?
+*CHI: where is your shoe ? *MOT: your shoe likes hungry . *CHI: what is a book ?
+*FAT: who has my teddy ? *FAT: a ball has there . *INV: a ball is on the table .
+*FAT: do you want your shoe ? *INV: do you want the duck ? *FAT: the dog goes hungry .
+*FAT: my teddy likes hungry . *FAT: a book goes here . *FAT: my teddy was sleeping .
+*FAT: the dog goes there . *FAT: where is the cow ? *FAT: my teddy goes in the box .
+*INV: what is a book ? *MOT: who has a book ? *MOT: your shoe wants hungry .
+*FAT: your shoe was big . *CHI: where is my teddy ? *FAT: what is the dog ?
+*INV: a ball goes here . *MOT: a book has sleeping . *FAT: the cow wants big .
+*INV: your shoe is in the box . *FAT: where is my teddy ? *CHI: what is the duck ?
+*MOT: what is my teddy ? *INV: your shoe is there . *FAT: the cat has hungry .
+*MOT: do you want the duck ? *INV: the dog was here . *FAT: my teddy likes sleeping .
+*CHI: what is the cow ? *MOT: the duck goes hungry . *INV: the dog is sleeping .
+*INV: what is a book ? *INV: where is the duck ? *INV: the cat goes hungry .
+*CHI: the cat is here . *CHI: do you want the cow ? *INV: who has your shoe ?
+*CHI: do you want the cat ? *FAT: what is my teddy ? *INV: who has the duck ?
+*FAT: your shoe is in the box . *FAT: where is your shoe ? *CHI: your shoe was sleeping .
+*MOT: what is a book ? *FAT: my teddy was hungry . *CHI: your shoe likes there .
+*MOT: who has the cow ? *MOT: a book was big . *MOT: a ball goes big .
+*CHI: your shoe goes big . *INV: the cat was on the table . *FAT: what is my teddy ?
+*INV: your shoe has big . *FAT: a ball is here . *MOT: the dog has big .
+*FAT: the cat was there . *MOT: my teddy wants here . *INV: a ball was in the box .
+*FAT: a ball goes in the box . *MOT: the dog has here . *MOT: who has the duck ?
+*FAT: the cat was hungry . *FAT: the dog is on the table . *CHI: do you want a ball ?
+*INV: a book wants hungry . *CHI: my teddy goes on the table . *CHI: who has the cow ?
+*MOT: what is a book ? *FAT: your shoe has hungry . *MOT: your shoe wants red .
+*CHI: do you want a ball ? *CHI: a ball wants red . *CHI: my teddy goes here .
+*FAT: where is a book ? *FAT: what is your shoe ? *INV: the duck goes big .
+*CHI: a ball goes here . *INV: the cow likes sleeping . *CHI: a ball wants big .
+*CHI: do you want the cow ? *FAT: what is my teddy ? *CHI: my teddy wants hungry .
+*MOT: what is a book ? *MOT: the cat has sleeping . *CHI: the duck likes red .
+*CHI: your shoe is hungry . *MOT: a ball likes on the table . *CHI: where is the dog ?
+*MOT: what is the cat ? *FAT: where is the duck ? *INV: where is the duck ?
+*INV: what is the cow ? *MOT: the dog is in the box . *MOT: a book is red .
+*CHI: who has the cow ? *INV: the cow was on the table . *INV: do you want the cow ?
+*INV: do you want the cow ? *CHI: my teddy wants red . *MOT: who has the cow ?
+*MOT: do you want a ball ? *CHI: a ball goes sleeping . *CHI: do you want the dog ?
+*FAT: do you want your shoe ? *CHI: what is the dog ? *MOT: who has the duck ?
+*CHI: where is the duck ? *MOT: your shoe likes big . *INV: the cow is here .
+*INV: do you want the cow ? *MOT: my teddy wants red . *FAT: the cow wants on the table .
+*MOT: a book goes red . *CHI: the duck goes big . *CHI: the duck was here .
+*MOT: the dog has hungry . *FAT: a book likes here . *MOT: the cat wants on the table .
+*MOT: your shoe was hungry . *MOT: what is my teddy ? *MOT: my teddy has here .
+*CHI: do you want a book ? *FAT: your shoe is here . *INV: where is the cat ?
+*MOT: my teddy has on the table . *INV: do you want the dog ? *FAT: your shoe goes on the table .
+*MOT: do you want your shoe ? *CHI: who has the duck ? *FAT: do you want the duck ?
+*CHI: a book goes red . *CHI: a ball has there . *MOT: what is your shoe ?
+*FAT: my teddy wants hungry . *CHI: the cat goes here . *CHI: the cow is red .
+*INV: do you want my teddy ? *FAT: the duck wants sleeping . *INV: what is your shoe ?
+*INV: where is my teddy ? *MOT: a ball goes on the table . *INV: the duck has in the box .
+*CHI: a ball was here . *CHI: my teddy wants in the box . *MOT: a ball likes red .
+*FAT: the duck goes here . *FAT: where is the cow ? *CHI: where is a book ?
+*INV: the cat was sleeping . *FAT: where is a book ? *INV: the cat was hungry .
+*FAT: where is your shoe ? *MOT: the cat has there . *INV: the cow was hungry .
+*FAT: what is my teddy ? *MOT: your shoe has sleeping . *CHI: your shoe is in the box .
+*MOT: who has the duck ? *FAT: a book wants hungry . *INV: your shoe is big .
+*MOT: what is my teddy ? *CHI: who has my teddy ? *FAT: a book wants there .
+*CHI: the dog was hungry . *MOT: where is the dog ? *INV: the cat wants red .
+*CHI: the cow was in the box . *FAT: the cow wants there . *MOT: do you want my teddy ?
+*CHI: where is the dog ? *MOT: the cow wants hungry . *FAT: the cow has in the box .
+*MOT: the duck wants here . *INV: the cow is hungry . *MOT: the cat wants sleeping .
+*MOT: do you want the duck ? *MOT: the cow likes on the table . *MOT: my teddy goes hungry .
+*INV: where is your shoe ? *FAT: the cow has there . *INV: a ball has hungry .
+*FAT: the dog likes on the table . *MOT: where is my teddy ? *MOT: a ball goes red .
+*INV: your shoe has big . *MOT: do you want your shoe ? *CHI: a ball has on the table .
+*FAT: who has a book ? *MOT: a ball is sleeping . *MOT: where is a ball ?
+*INV: who has the dog ? *MOT: a book has big . *INV: the cat was big .
+*FAT: where is the dog ? *FAT: what is a book ? *FAT: a ball was in the box .
+*INV: a book goes on the table . *CHI: who has a ball ? *CHI: the dog likes here .
+*CHI: the dog goes in the box . *MOT: a book has big . *INV: who has the cow ?
+*CHI: where is the dog ? *MOT: the cow is big . *CHI: the dog wants hungry .
+*MOT: who has my teddy ? *CHI: the cow likes in the box . *INV: a ball wants here .
+*FAT: the duck likes here . *CHI: a book goes red . *INV: where is the cat ?
+*INV: do you want the cow ? *FAT: the cow is red . *CHI: my teddy is hungry .
+*INV: your shoe wants here . *MOT: a ball goes sleeping . *CHI: do you want a book ?
+*FAT: a book has big . *CHI: the dog wants there . *FAT: a book goes red .
+*INV: a book wants red . *MOT: what is the duck ? *INV: who has a book ?
+*INV: where is my teddy ? *MOT: where is a book ? *INV: the cow likes big .
+*CHI: the cow goes on the table . *INV: do you want a book ? *MOT: my teddy likes there .
+*CHI: who has the cat ? *CHI: who has a book ? *INV: the dog likes here .
+*CHI: the cat wants big . *FAT: what is your shoe ? *INV: where is the cat ?
+*INV: do you want the duck ? *FAT: my teddy goes big . *INV: do you want your shoe ?
+*CHI: the cow has here . *CHI: who has the duck ? *CHI: the cat has in the box .
+*INV: who has the dog ? *MOT: the cow likes in the box . *FAT: my teddy goes red .
+*FAT: a book has in the box . *INV: where is the dog ? *INV: your shoe wants red .
+*INV: my teddy wants there . *INV: my teddy goes hungry . *MOT: the duck likes big .
+*INV: my teddy goes hungry . *CHI: my teddy goes sleeping . *FAT: who has your shoe ?
+*CHI: a ball wants on the table . *MOT: what is the cat ? *FAT: do you want the duck ?
+*INV: the duck likes in the box . *FAT: the dog was in the box . *CHI: what is the cow ?
+*FAT: the dog likes on the table . *FAT: who has a ball ? *CHI: who has your shoe ?
+*MOT: the cow goes here . *INV: your shoe has there . *FAT: the duck has big .

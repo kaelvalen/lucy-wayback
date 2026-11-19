@@ -139,8 +139,15 @@ impl Speaker {
 
 impl Talk {
     pub fn run(&self) -> Result<()> {
-        let (mut eng, obs) = save::load(&self.resume)
+        let (mut eng, obs, version) = save::load_versioned(&self.resume)
             .with_context(|| format!("loading {}", self.resume.display()))?;
+        if version < save::CURRENT {
+            println!(
+                "(migrated from format {version} to {} in memory; {} is not changed)",
+                save::CURRENT,
+                self.resume.display()
+            );
+        }
         ensure!(
             eng.p.tissue == Tissue::Context,
             "talk needs a save of a context-tissue run"
@@ -152,6 +159,16 @@ impl Talk {
             "--temperature must be >= 0"
         );
         let out_path = self.save.clone().unwrap_or_else(|| talk_path(&self.resume));
+        let same = |a: &Path, b: &Path| {
+            std::fs::canonicalize(a)
+                .ok()
+                .is_some_and(|a| std::fs::canonicalize(b).ok() == Some(a))
+        };
+        ensure!(
+            version == save::CURRENT || !same(&self.resume, &out_path),
+            "{} is format {version}: talk never overwrites an older tissue; choose another --save",
+            self.resume.display()
+        );
         let mut rng = lucy_core::seed::stream(self.seed, STREAM_TALK);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {

@@ -121,6 +121,8 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         sweeps: usize,
     },
+    /// Upgrade a save to the current format (the chain of migrations; `input` is not changed).
+    Migrate { input: PathBuf, output: PathBuf },
     /// Talk to a saved context tissue: each typed line is learned, then Lucy continues the
     /// text (her own bytes are context, never evidence). /sleep, /save, /quit; saves on exit.
     Talk {
@@ -353,8 +355,15 @@ fn simulate(
     let unigram = unigram_entropy_bits(&s.corpus);
     let (mut eng, mut obs) = match &a.resume {
         Some(path) => {
-            let (mut eng, mut obs) = lucy_core::save::load(path)
+            let (mut eng, mut obs, version) = lucy_core::save::load_versioned(path)
                 .with_context(|| format!("loading {}", path.display()))?;
+            if version < lucy_core::save::CURRENT {
+                eprintln!(
+                    "migrated {} from format {version} to {} in memory",
+                    path.display(),
+                    lucy_core::save::CURRENT
+                );
+            }
             obs.set_out(out);
             let seen = (eng.stats.bytes_total as usize).min(s.corpus.len());
             eng.stats.baselines.rebuild(&s.corpus[..seen]);
@@ -621,6 +630,22 @@ fn main() -> Result<()> {
             let o = simulate(&a, &s, 0, Some(metrics_out(&metrics, &a)?), None)?;
             summary(&o);
             println!("pass 2 metrics -> {}", metrics.display());
+        }
+        Cmd::Migrate { input, output } => {
+            ensure!(
+                fs::canonicalize(&input)? != fs::canonicalize(&output).unwrap_or(output.clone()),
+                "migrate never overwrites its input: choose another output path"
+            );
+            let (eng, obs, version) = lucy_core::save::load_versioned(&input)
+                .with_context(|| format!("loading {}", input.display()))?;
+            lucy_core::save::save(&output, &eng, &obs)
+                .with_context(|| format!("saving {}", output.display()))?;
+            println!(
+                "{} (format {version}) -> {} (format {})",
+                input.display(),
+                output.display(),
+                lucy_core::save::CURRENT
+            );
         }
         Cmd::WordBound {
             corpus,
