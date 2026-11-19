@@ -66,14 +66,13 @@ mod tests {
         let p = crate::rules::Params {
             consolidate_every: 300, // exercise plasticity and wayback state across the cut
             tissue,
+            ctx_t_v: 300.0, // prune across the cut too
             ..Default::default()
         };
-        let corpus: Vec<u8> = b"the cat sat on the mat. the dog sat on the log. "
-            .iter()
-            .copied()
-            .cycle()
-            .take(4000)
-            .collect();
+        // Two phrases in turn: the first one's contexts fade and are pruned during the second.
+        let phrase = |s: &[u8]| s.iter().copied().cycle().take(2000).collect::<Vec<u8>>();
+        let mut corpus = phrase(b"the cat sat on the mat. the dog sat on the log. ");
+        corpus.extend(phrase(b"a bird flew over my house; ducks swim. "));
         let k = cfg.ticks_per_byte;
         let (n, total) = (1500 * k + 3, 3000 * k);
         let fresh = || {
@@ -99,8 +98,10 @@ mod tests {
         b.run_until(&mut src, total, &mut ob).unwrap();
         ob.finish(&mut b).unwrap();
 
-        assert!(a.plasticity.passes > 0);
-        assert!(a.ctx.cells() > 1 || tissue == crate::rules::Tissue::Reservoir);
+        match tissue {
+            crate::rules::Tissue::Context => assert!(a.ctx.pruned > 0 && a.ctx.cells() > 1),
+            crate::rules::Tissue::Reservoir => assert!(a.plasticity.passes > 0),
+        }
         assert_eq!(state_hash(&a), state_hash(&b));
         assert_eq!(oa.metrics_hash(), ob.metrics_hash());
         assert_eq!(oa.reports, ob.reports);

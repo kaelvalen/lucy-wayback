@@ -395,14 +395,14 @@ impl Engine {
     fn arrive(&mut self, t: u64, src: &mut dyn Iterator<Item = u8>) {
         let Some(byte) = src.next() else { return };
         let b = byte as usize;
+        if self.p.tissue == rules::Tissue::Context {
+            self.arrive_context(t, b);
+            return;
+        }
         let every = u64::from(self.p.consolidate_every);
         if every > 0 && self.stats.bytes_total > 0 && self.stats.bytes_total.is_multiple_of(every) {
             let rep = crate::plasticity::consolidate(self, t);
             self.stats.on_consolidation(&rep);
-        }
-        if self.p.tissue == rules::Tissue::Context {
-            self.arrive_context(t, b);
-            return;
         }
         let mut touched = self.senses.take_hot();
         let truth_hot = touched.contains(&(b as u32));
@@ -502,7 +502,8 @@ impl Engine {
     }
 
     /// Context-cell arrival: vote -> distribution over the 256-byte sheet -> learn on the chain
-    /// -> grow at the deepest miss. The byte's input cell still spikes into the reservoir.
+    /// -> grow at the deepest miss. The reservoir is off the byte path: nothing spikes into it,
+    /// and its consolidation does not run.
     fn arrive_context(&mut self, t: u64, b: usize) {
         let every = u64::from(self.p.consolidate_every);
         if every > 0 && self.stats.bytes_total > 0 && self.stats.bytes_total.is_multiple_of(every) {
@@ -519,21 +520,6 @@ impl Engine {
             .on_byte(guess as usize == b, &scores, probs[b], b);
         self.senses.scores = scores;
         self.senses.probs = probs;
-        for c in self.senses.take_hot() {
-            self.touch(c as usize, t);
-            self.g.cells.clear_input(c as usize);
-        }
-        let cells = &mut self.g.cells;
-        cells.h_prev[b] = cells.h[b];
-        cells.h[b] = self.senses.codes[b];
-        self.spike(
-            b,
-            t,
-            Wave {
-                origin: self.stats.bytes_total,
-                depth: 0,
-            },
-        );
         self.sched.push_arrive(t + self.senses.ticks_per_byte);
     }
 }

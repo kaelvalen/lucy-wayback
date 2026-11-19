@@ -70,7 +70,11 @@ impl Default for SeedConfig {
 
 impl SeedConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.hidden <= self.fanout {
+        let no_reservoir = self.hidden == 0
+            && self.fanout == 0
+            && self.input_fanout == 0
+            && self.predict_fanin == 0;
+        if self.hidden <= self.fanout && !no_reservoir {
             return Err(format!(
                 "hidden ({}) must exceed fanout ({})",
                 self.hidden, self.fanout

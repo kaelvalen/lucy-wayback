@@ -12,7 +12,7 @@ use lucy_core::observe::{
     Observatory, state_hash, unigram_entropy_bits, unigram_top1_accuracy, write_snapshot,
 };
 use lucy_core::probe::{ProbeConfig, Prober};
-use lucy_core::rules::Params;
+use lucy_core::rules::{Params, Tissue};
 use lucy_core::seed::{self, SeedConfig};
 use serde_json::json;
 
@@ -145,6 +145,10 @@ struct RunArgs {
     /// absolute end; metrics are appended.
     #[arg(long)]
     resume: Option<PathBuf>,
+    /// Byte-stream tissue, overriding --params: `context` (context cells, default) or
+    /// `reservoir` (the Phase 1 W/Q hidden cells and input-cell readout).
+    #[arg(long, value_parser = ["context", "reservoir"])]
+    tissue: Option<String>,
 }
 
 struct Setup {
@@ -176,6 +180,9 @@ impl RunArgs {
         if self.probe_paths {
             v.push("--probe-paths".to_string());
         }
+        if let Some(t) = &self.tissue {
+            v.extend(["--tissue".to_string(), t.clone()]);
+        }
         v
     }
 
@@ -204,7 +211,7 @@ impl RunArgs {
                 .num_threads(self.threads)
                 .build_global();
         }
-        let p = match &self.params {
+        let mut p: Params = match &self.params {
             Some(path) => {
                 let text = fs::read_to_string(path)
                     .with_context(|| format!("reading {}", path.display()))?;
@@ -213,15 +220,25 @@ impl RunArgs {
             }
             None => Params::default(),
         };
+        if let Some(t) = &self.tissue {
+            p.tissue = serde_json::from_value(serde_json::Value::String(t.clone()))?;
+        }
         p.validate()
             .map_err(anyhow::Error::msg)
             .context("invalid params")?;
+        let reservoir = p.tissue == Tissue::Reservoir;
+        ensure!(
+            reservoir || self.probe_every == 0,
+            "the probe measures the reservoir: add --tissue reservoir"
+        );
+        // Context cells: the reservoir is off the byte path, so none is built.
+        let n = |x: usize| if reservoir { x } else { 0 };
         let cfg = SeedConfig {
             seed: self.seed,
-            hidden: self.cells,
-            fanout: self.fanout,
-            input_fanout: self.input_fanout,
-            predict_fanin: self.predict_fanin,
+            hidden: n(self.cells),
+            fanout: n(self.fanout),
+            input_fanout: n(self.input_fanout),
+            predict_fanin: n(self.predict_fanin),
             ticks_per_byte: self.ticks_per_byte,
             ring_cap: self.ring,
             ..SeedConfig::default()
@@ -353,12 +370,13 @@ fn summary(o: &Outcome) {
     let st = &o.eng.stats;
     let fires = o.eng.ring.total();
     println!(
-        "ticks {}  bytes {}  events {}  fires {}  cells {}",
+        "ticks {}  bytes {}  events {}  fires {}  cells {}  context cells {}",
         o.eng.now,
         st.bytes_total,
         st.events,
         fires,
-        o.eng.g.cells.slots.live()
+        o.eng.g.cells.slots.live(),
+        o.eng.ctx.cells()
     );
     println!(
         "wall {:.2}s  events/sec {:.0}  fires/sec {:.0}",
@@ -486,6 +504,10 @@ fn main() -> Result<()> {
         }
         Cmd::BenchScaling { a, multipliers } => {
             let s = a.setup()?;
+            ensure!(
+                s.p.tissue == Tissue::Reservoir,
+                "bench-scaling adds dormant reservoir cells: add --tissue reservoir"
+            );
             println!(
                 "{:>5} {:>8} {:>11} {:>10} {:>9} {:>9} {:>7}",
                 "mult", "cells", "events", "fires", "ns/event", "ns/fire", "ratio"
