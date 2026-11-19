@@ -83,6 +83,19 @@ enum Cmd {
         #[arg(long, default_value = "runs/sweep")]
         out: PathBuf,
     },
+    /// Offline upper bound for class cells: pass 1 runs without classes, its final contexts are
+    /// clustered in hindsight (Brown-style exchange), pass 2 reruns with that fixed map through
+    /// the same back-off path (`cls_mode = 3`). Metrics are pass 2's.
+    ClassBound {
+        #[command(flatten)]
+        a: RunArgs,
+        #[arg(long, default_value = "runs/class-bound.jsonl")]
+        metrics: PathBuf,
+        #[arg(long, default_value_t = 4096)]
+        classes: usize,
+        #[arg(long, default_value_t = 5)]
+        sweeps: usize,
+    },
     /// Same activity, more total cells: cost must stay ~constant.
     BenchScaling {
         #[command(flatten)]
@@ -155,6 +168,8 @@ struct Setup {
     corpus: Vec<u8>,
     cfg: SeedConfig,
     p: Params,
+    /// Fixed class map for `cls_mode = 3` (`class-bound` pass 2).
+    oracle: Option<lucy_core::context::ClassMap>,
 }
 
 impl RunArgs {
@@ -246,7 +261,12 @@ impl RunArgs {
         cfg.validate()
             .map_err(anyhow::Error::msg)
             .context("invalid graph config")?;
-        Ok(Setup { corpus, cfg, p })
+        Ok(Setup {
+            corpus,
+            cfg,
+            p,
+            oracle: None,
+        })
     }
 }
 
@@ -267,9 +287,11 @@ fn simulate(
     let unigram = unigram_entropy_bits(&s.corpus);
     let (mut eng, mut obs) = match &a.resume {
         Some(path) => {
-            let (eng, mut obs) = lucy_core::save::load(path)
+            let (mut eng, mut obs) = lucy_core::save::load(path)
                 .with_context(|| format!("loading {}", path.display()))?;
             obs.set_out(out);
+            let seen = (eng.stats.bytes_total as usize).min(s.corpus.len());
+            eng.stats.baselines.rebuild(&s.corpus[..seen]);
             (eng, obs)
         }
         None => {
@@ -293,6 +315,9 @@ fn simulate(
         }
     };
     eng.parallel = a.threads > 1;
+    if let Some(m) = &s.oracle {
+        eng.ctx.set_oracle(m.clone());
+    }
     if a.probe_every > 0 {
         let (dir, dump, snapshots) =
             artifacts.map_or((None, false, false), |(d, x, y)| (Some(d), x, y));
@@ -501,6 +526,35 @@ fn main() -> Result<()> {
                 out: &out,
             }
             .run()?;
+        }
+        Cmd::ClassBound {
+            a,
+            metrics,
+            classes,
+            sweeps,
+        } => {
+            let mut s = a.setup()?;
+            ensure!(
+                s.p.tissue == Tissue::Context,
+                "class-bound needs the context tissue"
+            );
+            let p = s.p.clone();
+            s.p.cls_mode = 0;
+            let o = simulate(&a, &s, 0, None, None)?;
+            let t0 = Instant::now();
+            let map = o.eng.ctx.batch_classes(&p, classes, sweeps);
+            let used: std::collections::BTreeSet<u32> = map.values().copied().collect();
+            println!(
+                "pass 1: {} contexts -> {} classes in {:.1}s",
+                map.len(),
+                used.len(),
+                t0.elapsed().as_secs_f64()
+            );
+            s.p = Params { cls_mode: 3, ..p };
+            s.oracle = Some(map);
+            let o = simulate(&a, &s, 0, Some(metrics_out(&metrics, &a)?), None)?;
+            summary(&o);
+            println!("pass 2 metrics -> {}", metrics.display());
         }
         Cmd::BenchScaling { a, multipliers } => {
             let s = a.setup()?;

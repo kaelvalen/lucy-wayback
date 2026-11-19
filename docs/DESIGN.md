@@ -337,6 +337,9 @@ Fold, CHILDES 1 MB (default decay 1e7, 900 k–1 M window):
 | 1 | 70.0 % | 1.526 | 102 338 | 80 213 |
 | 2 | 69.3 % | 1.575 | 60 568 | 161 003 |
 
+- **Decision (2026-11-19): fold is dropped.** The code stays, off (`ctx_fold_bits = 0`). In a
+  count-based context tree a redundant child costs memory, not accuracy, and a folded cell
+  regrows without its history. Pruning by decay stays.
 - **Fold does not pass "same or better accuracy with fewer cells"** at any threshold. It is
   a cells-for-accuracy trade, so it stays off.
 - A prequential variant was worse and was not kept. It credited each leaf with the bits it
@@ -374,6 +377,8 @@ CHILDES 1 MB, last window (capped weights):
 - **The mechanism works where fixed depth is short.** At K = 4, chunks add +2.2 points and
   −0.11 bits.
 - **Tension boundaries are as good as spaces.** Lucy's own surprise peaks segment the stream.
+- **Decision (2026-11-19): chunks stay off by default.** The self-derived surprise boundaries
+  are kept, because hierarchy will need them later.
 - **At K = 8 chunks are neutral, so they stay off.** Child-directed words are short, and 8 bytes
   already span most (previous word, partial word) contexts.
   - Chunk-anchored depth still beats uniform depth: K 12 is worse than K 8.
@@ -392,8 +397,8 @@ it gives 70.5 % / 1.504 bits.
 `--save PATH` writes the whole run state at the end of the run, and also every `--save-every`
 bytes if that is set: engine (cells, edges, scheduler wheel + overflow heap + per-tick arenas,
 ring, senses, plasticity incl. anchors, logical clock), observatory (window counters, calibrator,
-baselines, metrics hash) and the prober's windows. The format is bincode behind an 8-byte magic
-`LUCYSV02`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
+baseline window sums, metrics hash) and the prober's windows. The format is bincode behind an 8-byte magic
+`LUCYSV03`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
 rebuilt from `Params`, and every RNG draw comes from `stream(seed, id)` at its point of use.
 `--resume PATH --ticks <absolute end>` continues the run: graph flags, seed and params come from
 the save, the corpus skips the `bytes_total` bytes already consumed, and metrics are appended.
@@ -404,6 +409,10 @@ uninterrupted run's. The interrupted file additionally has one partial line at t
 - CHILDES, 4096 cells: a run to 400 k ticks and a run cut at 160 k (saving every 7 000 bytes) then
   resumed give the same state hash `a787ae53737c02a7`.
 - A save is ≈ 123 MB at 4096 cells, mostly W/Q and the ring.
+- **The count baselines are not saved.** The trigram table alone was 64 MB of a 71 MB context
+  save. On resume they are rebuilt by replaying the `bytes_total` corpus bytes already consumed:
+  deterministic, ≈ 30 ns/byte. A 1 MB context tissue now saves in 13 MB.
+- A save made by `lucy talk` has empty baselines, because no corpus goes with it.
 - For the 68 MB run: `--save runs/d.bin --save-every 2000000`.
 
 ## Scaling
@@ -836,6 +845,7 @@ Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 bes
 | fix: growth gate on visits | `4303646` | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
 | 3 structural sleep (prune + fold, fold off; t_v 1e7) | `3af9ea1` | 70.6 % | 1.504 | 150 365 | ≈ 2 700–3 250 (whole run, solo) | fold never wins (see Sleep); 1 MB in 3.1 s solo |
 | 4 chunk cells (off by default; K 8 + tension chunks) | `f6a1e4a` | 70.7 % | 1.512 | 261 184 | | +2.2 points at K 4; tension boundaries = spaces |
+| 5 class cells (off by default; similarity, weight 1) | (5) | 70.7 % | 1.477 | 150 365 + 4 096 classes | | random control 1.572 bits; offline bound 70.8 % / 1.457 |
 
 **68 MB (`childes-dialogue1.txt`), context tissue alone** (scratch bench calling `Context::arrive` and
 `sleep` every 1 000 bytes; three runs at once, so ns/byte is noisy; growth gate fixed):
@@ -861,7 +871,7 @@ v2 order (`docs/PROPOSAL-v2.md`): steps 0–4 are done (see Context cells and th
 The Phase 1 reservoir items are paused while the reservoir is off the byte path: bigram-path
 wiring, C's routing collapse, f16/bf16 W/Q.
 
-### Step 5 (design for review, not built): class cells from successor similarity
+### Step 5: class cells from successor similarity (built: `cls_mode`, off by default)
 
 **Target.** The weakest byte class is word-initial bytes. Current tissue (default decay):
 
@@ -909,7 +919,52 @@ new is doing it online, in sleep, inside a tension-grown context graph.
 - Control: random class assignment with the same class sizes. The gain must come from
   similarity, not from extra voters.
 
-**Risks.**
+**Built as designed** (`context/classes.rs`), with the vote at `2^(d−1) · cls_weight` (weight 1;
+it trades top-1 for bits: weight 4 gives −0.053 bits at −0.2 points top-1 at 1 MB). Controls:
+- `cls_mode = 2`, the random control: the same pipeline, but a fixed hash of the cell id picks
+  one of 4096 classes.
+- `lucy class-bound`, the offline upper bound. Pass 1 runs without classes. Its final eligible
+  contexts are clustered in hindsight by Brown-style exchange, which maximizes
+  `Σ N(class, x) ln N(class, x)/N(class)`, into 4096 classes. Pass 2 reruns with that fixed map
+  through the same back-off path (`cls_mode = 3`). The cell structure is the same in every run
+  (growth reads the deepest cell, not the vote), so only the class assignment differs.
+- Exchange time: 1 MB clusters 25 614 contexts in 8.8 s; 68 MB clusters 516 161 in 195 s
+  (rayon, deterministic).
+
+**Results**, whole run (byte-weighted over all windows). "Rare" = the deepest chain cell had been
+seen < 3 times: 15.3 % of bytes at 1 MB, 2.7 % at 68 MB.
+
+| | 1 MB top-1 | bits | word-initial | rare | 68 MB top-1 | bits | word-initial | rare |
+|---|---|---|---|---|---|---|---|---|
+| baseline | 68.97 % | 1.632 | 29.18 % | 47.09 % | 73.25 % | 1.295 | 32.06 % | 53.36 % |
+| random control | 68.99 % | 1.670 | 29.18 % | 47.29 % | 73.26 % | 1.432 | 32.06 % | 53.43 % |
+| **online classes** | 69.04 % | 1.602 | 29.34 % | 47.39 % | 73.29 % | 1.278 | 32.15 % | 53.15 % |
+| offline bound | 69.10 % | 1.589 | 29.37 % | 47.52 % | 73.39 % | 1.266 | 32.25 % | 53.46 % |
+
+Share of the bound's gain over baseline that online classes capture:
+
+| | 1 MB | 68 MB |
+|---|---|---|
+| bits | 70 % | 61 % |
+| word-initial | 84 % | 47 % |
+| top-1 | 54 % | 29 % |
+| rare contexts | 70 % | negative (−0.21 points, against the bound's +0.10) |
+
+Last 1 MB window at 68 MB: baseline 73.49 % / 1.262 / word-initial 32.21 %, online 73.60 % / 1.248 / 32.27 %,
+bound 73.87 % / 1.221 / 32.69 %.
+
+- **Similarity is what helps.** The random control gets no word-initial gain and makes bits
+  worse (+0.04 at 1 MB, +0.14 at 68 MB), so the online gains are not just an extra voter.
+- **The online classes capture most of the attainable gain at 1 MB and about half at 68 MB.**
+- **But the attainable gain itself is small.** Even hindsight Brown-style classes through this
+  back-off move word-initial accuracy by +0.2 points and bits by −0.03 to −0.04. Byte-level
+  successor classes are not the lever for "which word comes next".
+- The next lever is the fallback below: sketch the successor *chunk* (the next word), not the
+  next byte.
+- Classes stay off by default. The 68 MB wall times were taken while four runs and the
+  exchange step shared the machine, so the cost of classes is not measured.
+
+**Risks noted at design time** (both borne out):
 - On CHILDES the gain may be small, because the data is repetitive and memorization already
   covers a lot.
 - Byte-level successors (the next letter) may be too coarse a signal of word similarity. If so,

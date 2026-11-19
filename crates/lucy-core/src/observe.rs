@@ -126,8 +126,12 @@ impl<const ORDER: usize> CountModel<ORDER> {
 /// Unigram, bigram and trigram baselines with per-window accumulators.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Baselines {
+    // Not saved (the trigram table alone is 64 MB): `rebuild` replays the consumed corpus.
+    #[serde(skip)]
     uni: CountModel<0>,
+    #[serde(skip)]
     bi: CountModel<1>,
+    #[serde(skip)]
     tri: CountModel<2>,
     pub correct: [u64; 3],
     pub bits: [f64; 3],
@@ -140,6 +144,17 @@ impl Baselines {
             self.correct[i] += u64::from(ok);
             self.bits[i] += bits;
         }
+    }
+
+    /// Recount the models from the bytes already seen (after a resume); window sums are kept.
+    pub fn rebuild(&mut self, seen: &[u8]) {
+        let (mut uni, mut bi, mut tri) = Default::default();
+        for &b in seen {
+            CountModel::<0>::observe(&mut uni, b);
+            CountModel::<1>::observe(&mut bi, b);
+            CountModel::<2>::observe(&mut tri, b);
+        }
+        (self.uni, self.bi, self.tri) = (uni, bi, tri);
     }
 
     fn reset_window(&mut self) {
@@ -163,6 +178,11 @@ pub struct Stats {
     pub surprise_sum: f64,
     /// -log2 of Lucy's own softmax probability of the true byte, summed over the window.
     pub readout_bits_sum: f64,
+    /// Context tissue, per window: [correct, bytes] at word-initial bytes and where the deepest
+    /// chain cell had < 3 visits (a rare context); summed prediction entropy (bits).
+    pub word_initial: [u64; 2],
+    pub rare: [u64; 2],
+    pub entropy_sum: f64,
     pub calibrator: Calibrator,
     pub baselines: Baselines,
     pub depth_sum: u64,
@@ -273,6 +293,20 @@ impl Stats {
         self.surprise_sum += surprise;
     }
 
+    /// Context-tissue byte classes (call after `on_byte`'s prediction, with the previous byte).
+    pub fn on_context(&mut self, prev: Option<u8>, x: u8, correct: bool, deep_visits: u32, h: f64) {
+        let ok = u64::from(correct);
+        if x.is_ascii_alphanumeric() && !prev.unwrap_or(b' ').is_ascii_alphanumeric() {
+            self.word_initial[0] += ok;
+            self.word_initial[1] += 1;
+        }
+        if deep_visits < 3 {
+            self.rare[0] += ok;
+            self.rare[1] += 1;
+        }
+        self.entropy_sum += h;
+    }
+
     fn reset_window(&mut self) {
         self.fires = 0;
         self.hidden_fires = 0;
@@ -281,6 +315,9 @@ impl Stats {
         self.correct = 0;
         self.surprise_sum = 0.0;
         self.readout_bits_sum = 0.0;
+        self.word_initial = [0; 2];
+        self.rare = [0; 2];
+        self.entropy_sum = 0.0;
         self.baselines.reset_window();
         self.depth_sum = 0;
         self.depth_windows = 0;
@@ -386,6 +423,13 @@ pub struct Metrics {
     pub surprise_bits: Option<f64>,
     /// Lucy's own surprise: mean -log2 p(true byte) under the competitive readout (no fitting).
     pub readout_bits: Option<f64>,
+    /// Context tissue: top-1 at word-initial bytes and at rare contexts (deepest chain cell seen
+    /// < 3 times), their share of bytes, and mean prediction entropy (bits).
+    pub word_initial_accuracy: Option<f64>,
+    pub rare_context_accuracy: Option<f64>,
+    pub rare_context_share: Option<f64>,
+    pub entropy_bits: Option<f64>,
+    pub context_classes: usize,
     /// Calibrated softmax temperature at the end of the window.
     pub surprise_temperature: Option<f64>,
     /// Online count baselines on the same windows: [unigram, bigram, trigram].
@@ -627,6 +671,11 @@ impl Observatory {
             accuracy: ratio(s.correct as f64, s.bytes),
             surprise_bits: ratio(s.surprise_sum, s.bytes),
             readout_bits: ratio(s.readout_bits_sum, s.bytes),
+            word_initial_accuracy: ratio(s.word_initial[0] as f64, s.word_initial[1]),
+            rare_context_accuracy: ratio(s.rare[0] as f64, s.rare[1]),
+            rare_context_share: ratio(s.rare[1] as f64, s.bytes),
+            entropy_bits: ratio(s.entropy_sum, s.bytes),
+            context_classes: eng.ctx.classes(),
             surprise_temperature: (s.calibrator.beta > 0.0).then(|| 1.0 / s.calibrator.beta),
             baseline_accuracy: (s.bytes > 0)
                 .then(|| s.baselines.correct.map(|c| c as f64 / s.bytes as f64)),

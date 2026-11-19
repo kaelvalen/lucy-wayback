@@ -510,7 +510,11 @@ impl Engine {
             self.ctx.sleep(&self.p);
         }
         let mut probs = std::mem::take(&mut self.senses.probs);
+        let prev = self.ctx.last();
         let guess = self.ctx.arrive(b as u8, &self.p, &mut probs);
+        let (h, deep) = (self.ctx.entropy, self.ctx.deep_visits);
+        self.stats
+            .on_context(prev, b as u8, guess as usize == b, deep, h);
         // Logits whose softmax is exactly `probs` (all > 0: EPS mass is uniform).
         let mut scores = std::mem::take(&mut self.senses.scores);
         for (s, &q) in scores.iter_mut().zip(&probs) {

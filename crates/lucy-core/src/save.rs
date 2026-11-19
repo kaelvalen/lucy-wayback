@@ -10,7 +10,7 @@ use crate::kernel::Engine;
 use crate::observe::Observatory;
 
 /// File magic + format version: bump the version whenever a saved struct changes.
-const MAGIC: &[u8; 8] = b"LUCYSV02";
+const MAGIC: &[u8; 8] = b"LUCYSV03";
 
 /// Write atomically (temp file, then rename), so a crash mid-save keeps the previous save.
 pub fn save(path: &Path, eng: &Engine, obs: &Observatory) -> io::Result<()> {
@@ -24,8 +24,9 @@ pub fn save(path: &Path, eng: &Engine, obs: &Observatory) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-/// Load a save. The observatory comes back without a writer and without prober config/corpus:
-/// the caller reattaches them (`Observatory::set_out`, `Prober::reattach`).
+/// Load a save. The observatory comes back without a writer and without prober config/corpus,
+/// and the count baselines are empty: the caller reattaches them (`Observatory::set_out`,
+/// `Prober::reattach`, `stats.baselines.rebuild(consumed corpus)`).
 pub fn load(path: &Path) -> io::Result<(Engine, Observatory)> {
     let mut r = BufReader::new(File::open(path)?);
     let mut magic = [0u8; 8];
@@ -67,6 +68,8 @@ mod tests {
             consolidate_every: 300, // exercise plasticity and wayback state across the cut
             tissue,
             ctx_t_v: 300.0, // prune across the cut too
+            cls_mode: 1,    // class cells across the cut too
+            cls_min_visits: 4,
             ..Default::default()
         };
         // Two phrases in turn: the first one's contexts fade and are pruned during the second.
@@ -94,12 +97,16 @@ mod tests {
         drop((b, ob));
         let (mut b, mut ob) = load(&path).unwrap();
         fs::remove_file(&path).unwrap();
+        let seen = b.stats.bytes_total as usize;
+        b.stats.baselines.rebuild(&corpus[..seen]);
         let mut src = corpus.iter().copied().skip(b.stats.bytes_total as usize);
         b.run_until(&mut src, total, &mut ob).unwrap();
         ob.finish(&mut b).unwrap();
 
         match tissue {
-            crate::rules::Tissue::Context => assert!(a.ctx.pruned > 0 && a.ctx.cells() > 1),
+            crate::rules::Tissue::Context => {
+                assert!(a.ctx.pruned > 0 && a.ctx.cells() > 1 && a.ctx.classes() > 0)
+            }
             crate::rules::Tissue::Reservoir => assert!(a.plasticity.passes > 0),
         }
         assert_eq!(state_hash(&a), state_hash(&b));

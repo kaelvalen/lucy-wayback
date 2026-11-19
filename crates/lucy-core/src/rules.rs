@@ -107,6 +107,17 @@ pub struct Params {
     pub ctx_chunk: u32,
     pub ctx_chunk_bits: f64,
     pub ctx_chunk_cap: u32,
+    /// Class cells (step 5): 0 = off, 1 = successor similarity, 2 = random control,
+    /// 3 = oracle map (`lucy class-bound`). Cells with ≥ `cls_min_visits` visits and depth
+    /// ≤ K get a class in sleep; the class votes below its cell with `cls_weight`.
+    pub cls_mode: u32,
+    pub cls_min_visits: u32,
+    /// Similarity: join the nearest class within this Hellinger distance, else found one.
+    pub cls_radius: f64,
+    pub cls_budget: u32,
+    pub cls_weight: f64,
+    /// Random control: number of classes.
+    pub cls_random_classes: u32,
     /// Context cells: slots each sleep pass visits (fixed, so pruning is O(1) per byte).
     pub ctx_sweep: u32,
     /// Context cells: most live cells (0 = unlimited); at the budget, misses grow nothing.
@@ -168,6 +179,12 @@ impl Default for Params {
             ctx_chunk: 0,
             ctx_chunk_bits: 4.0,
             ctx_chunk_cap: 24,
+            cls_mode: 0,
+            cls_min_visits: 16,
+            cls_radius: 0.3,
+            cls_budget: 4096,
+            cls_weight: 0.5,
+            cls_random_classes: 1024,
             ctx_sweep: 4096,
             ctx_budget: 1 << 21,
         }
@@ -259,6 +276,9 @@ impl Params {
         if self.ctx_depth == 0 {
             return Err("ctx_depth must be >= 1".into());
         }
+        if self.cls_mode > 3 {
+            return Err("cls_mode must be 0..=3".into());
+        }
         if self.ctx_chunk > 2 || self.ctx_chunk_cap > 255 {
             return Err("ctx_chunk must be 0, 1 or 2 and ctx_chunk_cap <= 255".into());
         }
@@ -268,6 +288,8 @@ impl Params {
             ("ctx_prune_floor", self.ctx_prune_floor),
             ("ctx_fold_bits", self.ctx_fold_bits),
             ("ctx_chunk_bits", self.ctx_chunk_bits),
+            ("cls_radius", self.cls_radius),
+            ("cls_weight", self.cls_weight),
         ] {
             if !(x.is_finite() && x >= 0.0) {
                 return Err(format!("{name} must be finite and >= 0, got {x}"));

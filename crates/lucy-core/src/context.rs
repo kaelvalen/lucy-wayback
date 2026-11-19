@@ -18,6 +18,9 @@
 //! With `ctx_t_v = 0` (no decay) this is `scripts/context_cells_reference.py` up to tie-breaks:
 //! successor and child lists are sorted by byte, and ties go to the lowest byte.
 
+mod classes;
+
+pub use classes::ClassMap;
 use serde::{Deserialize, Serialize};
 
 use crate::num::S;
@@ -46,6 +49,8 @@ struct Cell {
     children: Vec<(u8, u32)>,
     /// What followed this context and how often (decayed), sorted by byte.
     succ: Vec<(u8, f64)>,
+    /// Class cell this context belongs to (step 5).
+    class: Option<u32>,
 }
 
 impl Cell {
@@ -116,6 +121,16 @@ pub struct Context {
     pub pruned: u64,
     pub folded: u64,
     pub starved: u64,
+    classes: classes::Classes,
+    /// Set by `predict`: entropy of the prediction (bits), visits of the deepest chain cell.
+    #[serde(skip)]
+    pub entropy: f64,
+    #[serde(skip)]
+    pub deep_visits: u32,
+    #[serde(skip)]
+    reach_now: usize,
+    #[serde(skip)]
+    vote_class: Option<u32>,
     #[serde(skip)]
     chain: Vec<u32>,
     #[serde(skip)]
@@ -138,6 +153,11 @@ impl Default for Context {
             pruned: 0,
             folded: 0,
             starved: 0,
+            classes: Default::default(),
+            entropy: 0.0,
+            deep_visits: 0,
+            reach_now: 0,
+            vote_class: None,
             chain: Vec::new(),
             score: vec![0.0; N_BYTES],
             order: Vec::new(),
@@ -154,14 +174,22 @@ impl Context {
     /// Byte `x` arrives: fill `probs` with the prediction made before seeing it, learn, grow.
     /// Returns the top-1 guess.
     pub fn arrive(&mut self, x: u8, p: &Params, probs: &mut [S]) -> u8 {
+        let guess = self.predict(p, probs);
+        self.learn(x, p, probs);
+        guess
+    }
+
+    /// The next-byte distribution from the current history (no learning). Also sets `entropy`
+    /// (bits) and `deep_visits` (visits of the deepest chain cell).
+    pub fn predict(&mut self, p: &Params, probs: &mut [S]) -> u8 {
         self.score.resize(N_BYTES, 0.0);
         let t_v = p.ctx_t_v;
         // SPREAD: the chain of existing suffixes of the history, shortest first.
         self.chain.clear();
         self.chain.push(0);
-        let reach = self.reach(p);
+        self.reach_now = self.reach(p);
         let mut c = 0usize;
-        for &y in self.hist.iter().rev().take(reach) {
+        for &y in self.hist.iter().rev().take(self.reach_now) {
             match self.cells[c].child(y) {
                 Some(ch) => {
                     self.chain.push(ch);
@@ -178,17 +206,22 @@ impl Context {
         for &ci in &self.chain {
             let cell = &mut self.cells[ci as usize];
             cell.decay(self.now, t_v);
-            let t = cell.total;
-            if t <= 0.0 {
-                continue;
-            }
-            let w = (t / (t + 2.0)) * 2f64.powi(cell.depth.min(p.ctx_depth) as i32) / t;
-            for &(b, v) in &cell.succ {
-                // w * v > 0, so a zero score means first touch.
-                if self.score[b as usize] == 0.0 {
-                    self.order.push(b);
-                }
-                self.score[b as usize] += w * v;
+            let w = 2f64.powi(cell.depth.min(p.ctx_depth) as i32);
+            Self::vote(&mut self.score, &mut self.order, cell, w);
+        }
+        // Class back-off: the deepest classed cell's class votes just below that cell.
+        self.vote_class = None;
+        if p.cls_mode > 0 {
+            let found = self.chain.iter().rev().find_map(|&ci| {
+                let c = &self.cells[ci as usize];
+                c.class.map(|k| (c.depth, k))
+            });
+            if let Some((d, k)) = found {
+                let cl = self.classes.get(k);
+                cl.decay(self.now, t_v);
+                let w = p.cls_weight * 2f64.powi(d.min(p.ctx_depth) as i32 - 1);
+                Self::vote(&mut self.score, &mut self.order, cl, w);
+                self.vote_class = Some(k);
             }
         }
         let mut guess = COLD_GUESS;
@@ -201,24 +234,68 @@ impl Context {
             }
             z += s;
         }
+        let floor = EPS / N_BYTES as f64;
         for (b, q) in probs.iter_mut().enumerate() {
             let share = if z != 0.0 { self.score[b] / z } else { 0.0 };
-            *q = (share * (1.0 - EPS) + EPS / N_BYTES as f64) as S;
+            *q = (share * (1.0 - EPS) + floor) as S;
         }
-        // Learn: every active cell earns; the deepest grows a child if it mispredicted.
+        // Entropy over the touched bytes plus the uniform floor of the others: O(touched).
+        let h_touched: f64 = self
+            .order
+            .iter()
+            .map(|&b| {
+                let q = self.score[b as usize] / z * (1.0 - EPS) + floor;
+                -q * q.log2()
+            })
+            .sum();
+        self.entropy = h_touched - (N_BYTES - self.order.len()) as f64 * floor * floor.log2();
+        let deep = *self.chain.last().unwrap() as usize;
+        self.deep_visits = self.cells[deep].visits;
+        guess
+    }
+
+    /// Add `cell`'s vote, `w · T/(T+2) / T` per count.
+    fn vote(score: &mut [f64], order: &mut Vec<u8>, cell: &Cell, w: f64) {
+        let t = cell.total;
+        if t <= 0.0 {
+            return;
+        }
+        let w = (t / (t + 2.0)) * w / t;
+        for &(b, v) in &cell.succ {
+            // w * v > 0, so a zero score means first touch.
+            if score[b as usize] == 0.0 {
+                order.push(b);
+            }
+            score[b as usize] += w * v;
+        }
+    }
+
+    /// Learn `x` after `predict`: every active cell earns; the deepest grows a child if it
+    /// mispredicted.
+    fn learn(&mut self, x: u8, p: &Params, probs: &[S]) {
         let deep = *self.chain.last().unwrap() as usize;
         let deep_guess = self.cells[deep].best();
         for &ci in &self.chain {
             self.cells[ci as usize].count(x);
         }
+        if let Some(k) = self.vote_class {
+            self.classes.count(k, x);
+        }
         let d = self.cells[deep].depth as usize;
         if deep_guess != Some(x)
-            && d < reach
+            && d < self.reach_now
             && f64::from(self.cells[deep].visits) >= p.ctx_grow_min
         {
             let y = self.hist[self.hist.len() - 1 - d];
             self.grow(deep, y, x, p);
         }
+        self.pass(x, p, probs);
+        self.now += 1;
+    }
+
+    /// `x` becomes context only: history and chunks move, no cell counts or grows. Lucy's own
+    /// output goes through here, never through `learn` (no self-reinforcement).
+    pub fn pass(&mut self, x: u8, p: &Params, probs: &[S]) {
         // Chunk boundary: x starts a new chunk after a non-alphanumeric byte (mode 1), or when
         // it was surprising, a tension peak (mode 2).
         let boundary = match p.ctx_chunk {
@@ -241,8 +318,11 @@ impl Context {
         if self.hist.len() > keep as usize {
             self.hist.remove(0);
         }
-        self.now += 1;
-        guess
+    }
+
+    /// The newest history byte.
+    pub fn last(&self) -> Option<u8> {
+        self.hist.last().copied()
     }
 
     /// How far back the chain may reach: K bytes, or with chunks on, back to the start of the
@@ -302,8 +382,14 @@ impl Context {
             } else {
                 self.cursor + 1
             };
+            if self.cells[c].depth == DEAD {
+                continue;
+            }
+            if p.cls_mode > 0 {
+                self.classify(c, p);
+            }
             let cell = &self.cells[c];
-            if cell.depth == DEAD || !cell.children.is_empty() {
+            if !cell.children.is_empty() {
                 continue;
             }
             let vitality = cell.vitality(self.now, p.ctx_t_v);
@@ -315,6 +401,7 @@ impl Context {
                 continue;
             }
             let parent = cell.parent as usize;
+            self.leave(c);
             let ch = &mut self.cells[parent].children;
             ch.retain(|&(_, id)| id as usize != c);
             self.cells[c] = Cell {
@@ -362,6 +449,7 @@ impl Context {
             h.u64(c.last_t);
             h.u64(c.total.to_bits());
             h.u64(c.visits as u64);
+            h.u64(c.class.map_or(u64::MAX, u64::from));
             for &(b, ch) in &c.children {
                 h.u64(((b as u64) << 32) | ch as u64);
             }
