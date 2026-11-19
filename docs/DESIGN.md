@@ -406,10 +406,12 @@ it gives 70.5 % / 1.504 bits.
   (`--me`, default `CHI`), printed and passed as context. Since her tag is given, any tag she
   writes ends her turn. Unframed, the first tag in her reply is hers and the second ends the
   turn.
-- **Weighting Kael's words** (both default off):
-  - `--kael-weight W`: each typed byte counts W instead of 1. Visits, the growth gate, still
+- **Weighting Kael's words:**
+  - `--kael-weight W`, **default 50** (Kael's decision, after the name test): each typed byte
+    counts W instead of 1. `--kael-weight 1` treats Kael like the womb. Upper failure: at
+    W = 100 000 on a K 8 womb she answers "I am Lucy" to every question (see the name test). Visits, the growth gate, still
     count 1.
-  - `--recency H`: the k-th byte learned in the session counts `W · 2^(k/H)`. That is the same
+  - `--recency H`, default off: the k-th byte learned in the session counts `W · 2^(k/H)`. That is the same
     as all earlier evidence (womb and older talk) halving in weight every H talk bytes,
     relative to new bytes, without rewriting stored counts. The exponent is capped at 2^600.
   - Both act only through `Context::weight`, which is not saved: after the session a womb
@@ -1088,6 +1090,42 @@ CHILDES 1 MB, K 64, whole run (scratch bench, the same calls as the engine):
 | fixed, cap 8 | 68.92 % | 1.652 | 29.08 % |
 | mixing η 0.005 / 0.02 / **0.1** / 0.4 | 69.18 / 69.26 / **69.29** / 69.17 % | 1.530 / 1.513 / **1.507** / 1.510 | 29.44–29.46 % |
 | (K 8 fixed) | 68.97 % | 1.632 | 29.18 % |
+
+**68 MB, K 64, whole run (last window in brackets):**
+
+| | top-1 | bits | word-initial | name test (`--kael-weight 50`) | control |
+|---|---|---|---|---|---|
+| fixed, uncapped (2 M budget) | 73.50 % (74.02) | 1.3658 (1.308) | 32.92 % | 15/20 | 0/20 |
+| fixed, cap 8 (2 M) | 73.89 % (74.17) | 1.2878 (1.258) | 34.06 % | 8/20 | 0/20 |
+| **mixing (2 M)** | **73.96 % (74.35)** | **1.2102 (1.183)** | **34.10 %** | **15/20** | **0/20** |
+| mixing (4 M) | 74.16 % (74.60) | 1.1993 (1.168) | 34.34 % | 16/20 (seeds 1, 2: 18/20, 20/20) | 0/20 (all seeds) |
+
+- **Accepted.** Mixing is at least the capped variant on both top-1 and bits (−0.078 bits),
+  and it matches the uncapped variant on the name test with the control at 0/20. No trade-off
+  curve was needed.
+- Weighted Kael cells sit in high-evidence buckets, which the corpus taught to trust, so
+  mixing keeps the name-learning of the uncapped vote without its corpus cost.
+
+**Cell budget** (68 MB, K 64 + mixing; peak RSS from `/proc/<pid>/status` VmHWM):
+
+| `ctx_budget` | top-1 | bits | word-initial | live cells | refused growths | peak RSS | save |
+|---|---|---|---|---|---|---|---|
+| 2 M | 73.96 % | 1.2102 | 34.10 % | 2.10 M | 15.1 M | 725 MB | 244 MB |
+| **4 M** | 74.16 % | 1.1993 | 34.34 % | 4.19 M | 9.5 M | 1 201 MB | 415 MB |
+| 8 M | 74.29 % | 1.1934 | 34.54 % | 7.80 M (never full) | 0 | 1 910 MB | 663 MB |
+
+- 2 → 4 M gains +0.20 points top-1 for +0.48 GB; 4 → 8 M gains +0.13 points for +0.71 GB.
+  At 68 MB the tissue never fills 8 M.
+- **The knee is at 4 M, which is the default.** A longer life will hit it, and decay then sets
+  the equilibrium.
+
+**Defaults now (2026-11-19, Kael's decisions):**
+- tissue: `ctx_depth` 64, `ctx_mix` on (η 0.1), `ctx_budget` 4 M;
+- talk: `--kael-weight` 50, `--recency` off;
+- the womb is `runs/v2/womb-mix4194304.bin` (save format `LUCYSV05`).
+
+Older wombs (`womb-base`, `womb-k64*`, `womb-cls`) predate the mixer and are rejected cleanly by
+the magic check.
 
 ### Step 8 (design for review, not built): word level, steps 4 + 5 combined
 

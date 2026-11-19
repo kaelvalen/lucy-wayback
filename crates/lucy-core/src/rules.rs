@@ -179,8 +179,8 @@ impl Default for Params {
             replay_readout: true,
             readout_uniform: true,
             tissue: Tissue::Context,
-            ctx_depth: 8,
-            ctx_mix: false,
+            ctx_depth: 64,
+            ctx_mix: true,
             ctx_mix_rate: 0.1,
             ctx_vote_depth: 0,
             ctx_grow_min: 2.0,
@@ -197,7 +197,7 @@ impl Default for Params {
             cls_weight: 0.5,
             cls_random_classes: 1024,
             ctx_sweep: 4096,
-            ctx_budget: 1 << 21,
+            ctx_budget: 1 << 22,
         }
     }
 }

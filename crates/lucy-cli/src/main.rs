@@ -120,8 +120,9 @@ enum Cmd {
         idle: u64,
         #[arg(long, default_value_t = 0)]
         seed: u64,
-        /// Each typed byte counts this many times a womb byte (default 1 = off).
-        #[arg(long, default_value_t = 1.0)]
+        /// Each typed byte counts this many times a womb byte (1 = like the womb). The default
+        /// 50 is Kael's decision: with depth 64 it learns a taught name specifically.
+        #[arg(long, default_value_t = 50.0)]
         kael_weight: f64,
         /// Recency: earlier evidence (womb and older talk) halves in weight every H talk bytes,
         /// relative to new talk bytes (0 = off).

@@ -3,7 +3,8 @@
 From a womb tissue, teach 4 lines ("who are you ? *CHI: I am Lucy ."), then ask "who are you ?"
 N times (default 20) at temperature 0.6, and count the replies that contain "Lucy". Runs
 `lucy talk` with framing (Kael = *MOT:, Lucy = *CHI:). The womb is never written: the talk
-save goes to a temp file. Extra arguments go to `lucy talk` (e.g. --kael-weight 50).
+save goes to a temp file. Extra arguments go to `lucy talk` (talk's default --kael-weight is
+50; pass --kael-weight 1 to treat Kael like the womb).
 
 With --ask "what is that ?" the asked question is a control: Lucy should not answer "Lucy" to
 everything, only to "who are you ?".
