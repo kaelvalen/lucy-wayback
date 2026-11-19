@@ -835,7 +835,7 @@ Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 bes
 | 2 reservoir off the byte path | `7dc2a99` | 70.3 % | 1.516 | 117 278 | ≈ 5 300–10 900 (whole run); 1 650 (tissue alone) | 1 MB in 8.2 s; the observatory's calibrator (2.4 µs) and 256 logits (1 µs) cost more than the tissue |
 | fix: growth gate on visits | `4303646` | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
 | 3 structural sleep (prune + fold, fold off; t_v 1e7) | `3af9ea1` | 70.6 % | 1.504 | 150 365 | ≈ 2 700–3 250 (whole run, solo) | fold never wins (see Sleep); 1 MB in 3.1 s solo |
-| 4 chunk cells (off by default; K 8 + tension chunks) | (4) | 70.7 % | 1.512 | 261 184 | | +2.2 points at K 4; tension boundaries = spaces |
+| 4 chunk cells (off by default; K 8 + tension chunks) | `f6a1e4a` | 70.7 % | 1.512 | 261 184 | | +2.2 points at K 4; tension boundaries = spaces |
 
 **68 MB (`childes-dialogue1.txt`), context tissue alone** (scratch bench calling `Context::arrive` and
 `sleep` every 1 000 bytes; three runs at once, so ns/byte is noisy; growth gate fixed):
