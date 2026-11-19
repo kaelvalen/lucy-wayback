@@ -19,6 +19,7 @@
 //! successor and child lists are sorted by byte, and ties go to the lowest byte.
 
 mod classes;
+mod mix;
 
 pub use classes::ClassMap;
 use serde::{Deserialize, Serialize};
@@ -137,6 +138,12 @@ pub struct Context {
     reach_now: usize,
     #[serde(skip)]
     vote_class: Option<u32>,
+    mixer: mix::Mixer,
+    /// Set by `predict` for `learn`: the voters (bucket, weight, id, is class) and Σ weights.
+    #[serde(skip)]
+    members: Vec<(usize, f64, u32, bool)>,
+    #[serde(skip)]
+    z: f64,
     #[serde(skip)]
     chain: Vec<u32>,
     #[serde(skip)]
@@ -173,6 +180,9 @@ impl Default for Context {
             weight: 1.0,
             reach_now: 0,
             vote_class: None,
+            mixer: Default::default(),
+            members: Vec::new(),
+            z: 0.0,
             chain: Vec::new(),
             score: vec![0.0; N_BYTES],
             order: Vec::new(),
@@ -218,11 +228,28 @@ impl Context {
             self.score[b as usize] = 0.0;
         }
         self.order.clear();
+        self.members.clear();
+        if p.ctx_mix {
+            self.mixer.ensure(match p.ctx_vote_depth {
+                0 => 8,
+                d => d,
+            });
+        }
         for &ci in &self.chain {
             let cell = &mut self.cells[ci as usize];
             cell.decay(self.now, t_v);
-            let w = 2f64.powi(cell.depth.min(p.vote_depth()) as i32);
-            Self::vote(&mut self.score, &mut self.order, cell, w);
+            match p.ctx_mix {
+                true => {
+                    let b = mix::bucket(cell.depth, cell.total);
+                    let a = self.mixer.weight(b);
+                    Self::vote_mix(&mut self.score, &mut self.order, cell, a);
+                    self.members.push((b, a, ci, false));
+                }
+                false => {
+                    let w = 2f64.powi(cell.depth.min(p.vote_depth()) as i32);
+                    Self::vote(&mut self.score, &mut self.order, cell, w);
+                }
+            }
         }
         // Class back-off: the deepest classed cell's class votes just below that cell.
         self.vote_class = None;
@@ -234,8 +261,16 @@ impl Context {
             if let Some((d, k)) = found {
                 let cl = self.classes.get(k);
                 cl.decay(self.now, t_v);
-                let w = p.cls_weight * 2f64.powi(d.min(p.vote_depth()) as i32 - 1);
-                Self::vote(&mut self.score, &mut self.order, cl, w);
+                if p.ctx_mix {
+                    // The class sits one depth below its cell, in that bucket's reliability.
+                    let b = mix::bucket(d.saturating_sub(1), cl.total);
+                    let a = p.cls_weight * self.mixer.weight(b);
+                    Self::vote_mix(&mut self.score, &mut self.order, cl, a);
+                    self.members.push((b, a, k, true));
+                } else {
+                    let w = p.cls_weight * 2f64.powi(d.min(p.vote_depth()) as i32 - 1);
+                    Self::vote(&mut self.score, &mut self.order, cl, w);
+                }
                 self.vote_class = Some(k);
             }
         }
@@ -249,6 +284,7 @@ impl Context {
             }
             z += s;
         }
+        self.z = z;
         let floor = EPS / N_BYTES as f64;
         for (b, q) in probs.iter_mut().enumerate() {
             let share = if z != 0.0 { self.score[b] / z } else { 0.0 };
@@ -286,9 +322,43 @@ impl Context {
         }
     }
 
+    /// Mixture vote: the cell's distribution with total weight `a` (`a/T` per count).
+    fn vote_mix(score: &mut [f64], order: &mut Vec<u8>, cell: &Cell, a: f64) {
+        let t = cell.total;
+        if t <= 0.0 {
+            return;
+        }
+        for &(b, v) in &cell.succ {
+            if score[b as usize] == 0.0 {
+                order.push(b);
+            }
+            score[b as usize] += a / t * v;
+        }
+    }
+
     /// Learn `x` after `predict`: every active cell earns; the deepest grows a child if it
     /// mispredicted.
     fn learn(&mut self, x: u8, p: &Params, probs: &[S]) {
+        if p.ctx_mix && self.z > 0.0 {
+            let ph = |c: &Cell| {
+                c.succ
+                    .binary_search_by_key(&x, |&(b, _)| b)
+                    .map_or(0.0, |i| c.succ[i].1 / c.total)
+            };
+            let ms: Vec<(usize, f64, f64)> = self
+                .members
+                .iter()
+                .map(|&(b, a, id, class)| {
+                    let c = match class {
+                        true => self.classes.get(id),
+                        false => &mut self.cells[id as usize],
+                    };
+                    (b, a, ph(c))
+                })
+                .collect();
+            let m = self.score[x as usize] / self.z;
+            self.mixer.learn(&ms, self.z, m, EPS, p.ctx_mix_rate);
+        }
         let deep = *self.chain.last().unwrap() as usize;
         let deep_guess = self.cells[deep].best();
         for &ci in &self.chain {
@@ -545,6 +615,7 @@ impl Context {
         h.u64(((self.chunk[0] as u64) << 32) | self.chunk[1] as u64);
         h.u64(self.now);
         h.u64(self.cursor as u64);
+        self.mixer.feed_hash(h);
     }
 }
 

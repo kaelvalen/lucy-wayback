@@ -435,7 +435,7 @@ it gives 70.5 % / 1.504 bits.
 bytes if that is set: engine (cells, edges, scheduler wheel + overflow heap + per-tick arenas,
 ring, senses, plasticity incl. anchors, logical clock), observatory (window counters, calibrator,
 baseline window sums, metrics hash) and the prober's windows. The format is bincode behind an 8-byte magic
-`LUCYSV04`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
+`LUCYSV05`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
 rebuilt from `Params`, and every RNG draw comes from `stream(seed, id)` at its point of use.
 `--resume PATH --ticks <absolute end>` continues the run: graph flags, seed and params come from
 the save, the corpus skips the `bytes_total` bytes already consumed, and metrics are appended.
@@ -1060,6 +1060,34 @@ at T 0.6 and count replies containing "Lucy". The control asks "what is that ?" 
 - The vote cap halves the name rate (8 vs 15). The deep, question-specific cell is exactly the
   one the cap weakens, so the cap trades corpus accuracy for fast learning from Kael.
 - One seed only; 20 asks give a coarse rate.
+
+### Learned mixing (`ctx_mix`, `context/mix.rs`)
+
+This replaces the fixed vote weight `2^min(depth, cap) · T/(T+2)`. The vote was already a linear
+mixture of the chain cells' successor distributions; now each cell's weight is
+`a_c = exp(θ[depth][⌊log2 T⌋])`, one learned log-reliability per (depth × evidence) bucket
+(65 × 24).
+- **Learning.** After each byte, one gradient step on that byte's log-loss:
+  `θ_b += η (1−ε)/p(x) · Σ_{c∈b} a_c (p̂_c(x) − M(x)) / Σ a`, with each step clipped at 0.5.
+  It touches only the chain's buckets: O(chain), local, no global pass.
+- **Start.** θ starts at the capped fixed weighting (cap 8), so learning starts from the best
+  fixed variant.
+- **Name test.** Kael-weighted cells hold large counts, so they fall into high-evidence buckets
+  and use the reliability those buckets earned on the corpus.
+- **Classes.** A class voter sits one depth below its cell, at `cls_weight` times that bucket's
+  weight.
+- **Why this form.** A reliability-weighted linear vote, chosen over PAQ-style logistic mixing.
+  Logistic mixing over 256 symbols needs every voter's probability for every byte,
+  O(chain × 256); the linear mixture's gradient needs only p̂_c(x) of the byte that came.
+
+CHILDES 1 MB, K 64, whole run (scratch bench, the same calls as the engine):
+
+| | top-1 | bits | word-initial |
+|---|---|---|---|
+| fixed, uncapped | 68.06 % | 1.760 | 27.08 % |
+| fixed, cap 8 | 68.92 % | 1.652 | 29.08 % |
+| mixing η 0.005 / 0.02 / **0.1** / 0.4 | 69.18 / 69.26 / **69.29** / 69.17 % | 1.530 / 1.513 / **1.507** / 1.510 | 29.44–29.46 % |
+| (K 8 fixed) | 68.97 % | 1.632 | 29.18 % |
 
 ### Step 8 (design for review, not built): word level, steps 4 + 5 combined
 

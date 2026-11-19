@@ -91,6 +91,11 @@ pub struct Params {
     pub tissue: Tissue,
     /// Context cells: deepest context in bytes (K).
     pub ctx_depth: u32,
+    /// Context cells: learned mixing of the chain's votes (`context/mix.rs`): weight =
+    /// exp(θ[depth][evidence]), θ learned online by log-loss gradient at `ctx_mix_rate`.
+    /// false = the fixed `2^min(depth, vote depth) · T/(T+2)` weighting.
+    pub ctx_mix: bool,
+    pub ctx_mix_rate: f64,
     /// Context cells: deepest depth whose vote weight still doubles (`2^min(depth, this)`);
     /// 0 = `ctx_depth`. Lets the chain reach far back without a single deep count outvoting it.
     pub ctx_vote_depth: u32,
@@ -175,6 +180,8 @@ impl Default for Params {
             readout_uniform: true,
             tissue: Tissue::Context,
             ctx_depth: 8,
+            ctx_mix: false,
+            ctx_mix_rate: 0.1,
             ctx_vote_depth: 0,
             ctx_grow_min: 2.0,
             ctx_t_v: 1e7,
@@ -299,6 +306,7 @@ impl Params {
             ("ctx_t_v", self.ctx_t_v),
             ("ctx_prune_floor", self.ctx_prune_floor),
             ("ctx_fold_bits", self.ctx_fold_bits),
+            ("ctx_mix_rate", self.ctx_mix_rate),
             ("ctx_chunk_bits", self.ctx_chunk_bits),
             ("cls_radius", self.cls_radius),
             ("cls_weight", self.cls_weight),
