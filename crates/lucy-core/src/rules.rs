@@ -91,6 +91,9 @@ pub struct Params {
     pub tissue: Tissue,
     /// Context cells: deepest context in bytes (K).
     pub ctx_depth: u32,
+    /// Context cells: deepest depth whose vote weight still doubles (`2^min(depth, this)`);
+    /// 0 = `ctx_depth`. Lets the chain reach far back without a single deep count outvoting it.
+    pub ctx_vote_depth: u32,
     /// Context cells: visits (undecayed) the deepest cell needs before a miss grows a child.
     pub ctx_grow_min: f64,
     /// Context cells: decay timescale of successor counts, in bytes (0 = never decay).
@@ -172,6 +175,7 @@ impl Default for Params {
             readout_uniform: true,
             tissue: Tissue::Context,
             ctx_depth: 8,
+            ctx_vote_depth: 0,
             ctx_grow_min: 2.0,
             ctx_t_v: 1e7,
             ctx_prune_floor: 0.5,
@@ -192,6 +196,14 @@ impl Default for Params {
 }
 
 impl Params {
+    /// Vote-weight depth cap of context cells.
+    pub fn vote_depth(&self) -> u32 {
+        match self.ctx_vote_depth {
+            0 => self.ctx_depth,
+            d => d.min(self.ctx_depth),
+        }
+    }
+
     /// Defaults with the reservoir readout as the byte-stream tissue (the Phase 1 path).
     pub fn reservoir() -> Self {
         Self {

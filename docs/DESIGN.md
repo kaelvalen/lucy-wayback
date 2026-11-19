@@ -401,6 +401,19 @@ it gives 70.5 % / 1.504 bits.
 - **Lucy then continues the text.** Each byte is sampled from the blended prediction
   (`Context::sample`; `--temperature`, 0 = top-1) until a newline, `--max-bytes`, or another
   speaker's tag. If her first byte is a newline, she writes the next line.
+- **Framing** (default; `--raw` turns it off). A typed line that does not start with `*` is
+  learned as `*<you>: line` (`--you`, default `MOT`). Lucy's turn opens with ` *<me>: `
+  (`--me`, default `CHI`), printed and passed as context. Since her tag is given, any tag she
+  writes ends her turn. Unframed, the first tag in her reply is hers and the second ends the
+  turn.
+- **Weighting Kael's words** (both default off):
+  - `--kael-weight W`: each typed byte counts W instead of 1. Visits, the growth gate, still
+    count 1.
+  - `--recency H`: the k-th byte learned in the session counts `W · 2^(k/H)`. That is the same
+    as all earlier evidence (womb and older talk) halving in weight every H talk bytes,
+    relative to new bytes, without rewriting stored counts. The exponent is capped at 2^600.
+  - Both act only through `Context::weight`, which is not saved: after the session a womb
+    byte and a talk byte are just counts.
 - **One speaker per turn.** The first speaker tag in her reply is hers. A later `*` at a turn
   start (after a space or newline) is held back. If it completes `*[A-Z]+:`, the context
   returns to its position before the `*` (`Context::mark`/`rewind`, history and chunk state
@@ -422,7 +435,7 @@ it gives 70.5 % / 1.504 bits.
 bytes if that is set: engine (cells, edges, scheduler wheel + overflow heap + per-tick arenas,
 ring, senses, plasticity incl. anchors, logical clock), observatory (window counters, calibrator,
 baseline window sums, metrics hash) and the prober's windows. The format is bincode behind an 8-byte magic
-`LUCYSV03`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
+`LUCYSV04`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
 rebuilt from `Params`, and every RNG draw comes from `stream(seed, id)` at its point of use.
 `--resume PATH --ticks <absolute end>` continues the run: graph flags, seed and params come from
 the save, the corpus skips the `bytes_total` bytes already consumed, and metrics are appended.
@@ -995,6 +1008,58 @@ bound 73.87 % / 1.221 / 32.69 %.
   the fallback is to sketch the successor *chunk* (the next word's first 2–3 bytes, read from
   the cell's descendants in the forward direction). That needs chunk tracking (step 4) and costs
   more.
+
+### Adaptive depth (`ctx_depth` 64) and the name test
+
+**Why.** In `lucy talk` Lucy could not learn her name ("who are you ? *CHI: I am Lucy ." four
+times, no effect). At K = 8 the deepest context at the answer is exactly `? *CHI: `: the
+question lies outside the window, so every question looks the same.
+
+**Depth 64.** Growth still happens only at misses, so cells grow deep only where Lucy is wrong.
+New param `ctx_vote_depth` caps the vote weight at `2^min(depth, cap)` (0 = no cap). Growth
+reads the deepest cell's own guess, not the vote, so the cap changes predictions only; the
+tissue is the same (identical state hashes).
+
+Whole run (last window in brackets). Turn start = the byte after `*CHI: `.
+
+| | top-1 | bits | word-initial | cells | turn-start top-1 | deepest depth at turn starts |
+|---|---|---|---|---|---|---|
+| 1 MB, K 8 | 68.97 % (70.58) | 1.632 (1.504) | 29.18 % | 150 365 | 13.8 % | 8 (all) |
+| 1 MB, K 64 | 68.06 % (69.50) | 1.760 (1.653) | 27.08 % | 336 566 | 10.3 % | median 13, mean 14.1; 18 % at 17–32 |
+| 1 MB, K 64, vote cap 8 | 68.92 % (70.67) | 1.652 (1.522) | 29.08 % | 336 566 | 13.7 % | as above |
+| 68 MB, K 8 | 73.25 % (73.49) | 1.295 (1.262) | 32.06 % | 959 609 | 13.4 % | 8 (all) |
+| 68 MB, K 64 | 73.50 % (74.02) | 1.366 (1.308) | 32.92 % | 2 097 152 (budget) | — | — |
+| **68 MB, K 64, vote cap 8** | **73.89 % (74.17)** | **1.288 (1.258)** | **34.06 %** | 2 097 152 (budget) | **16.8 %** | median 17, mean 18.2; 55 % at 17–32, 1 % > 32 |
+
+- **At 68 MB, depth 64 with the vote capped at 8 is the best tissue so far.** It gains +0.64
+  points top-1, +2.0 points at word-initial bytes and +3.4 points at turn starts, and bits are
+  slightly better.
+- It filled the 2 M cell budget, which refused 15.1 M growths, so more cells might gain more.
+- Uncapped, a few counts in a deep cell outvote the chain: bits worsen by +0.07 at 68 MB and
+  +0.13 at 1 MB.
+- At 1 MB, depth 64 does not help (capped: −0.05 points).
+- Costs: 2.2× the cells, a 244 MB save (87 MB at K 8), 707 s against ≈ 320–520 s for 68 MB.
+  These timings were all contended, so the comparison is rough.
+- Not made the default yet; this needs your decision, the budget included.
+
+**Name test** (`scripts/name_test.py`): teach 4 framed lines, then ask "who are you ?" 20 times
+at T 0.6 and count replies containing "Lucy". The control asks "what is that ?" instead.
+
+| womb | `--kael-weight` 1 | 50 | control at 1 / 50 |
+|---|---|---|---|
+| K 8 | 0/20 | 0/20 | 0/20 / 0/20 |
+| K 64 | 0/20 | **15/20** | 0/20 / 0/20 |
+| K 64, vote cap 8 | 0/20 | 8/20 | 0/20 / 0/20 |
+
+- **The name is learned only with depth and weighting together, and it stays specific:** no
+  "Lucy" for the control question.
+- At K 8 there is no middle ground. Up to W 1000 nothing happens. At W 100 000 she answers
+  "I am Lucy" 20/20 to *every* question, the control included, because the context cannot tell
+  the questions apart.
+- Four examples at weight 1 cannot compete with 68 MB of counts at any depth.
+- The vote cap halves the name rate (8 vs 15). The deep, question-specific cell is exactly the
+  one the cap weakens, so the cap trades corpus accuracy for fast learning from Kael.
+- One seed only; 20 asks give a coarse rate.
 
 ### Step 8 (design for review, not built): word level, steps 4 + 5 combined
 

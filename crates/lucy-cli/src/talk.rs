@@ -25,6 +25,25 @@ pub struct Talk {
     pub entropy: bool,
     pub idle_secs: u64,
     pub seed: u64,
+    /// Weight of each byte Kael types, relative to a womb byte (1 = same).
+    pub kael_weight: f64,
+    /// Half-life (bytes) of all earlier evidence relative to talk bytes: the k-th talk byte
+    /// weighs `kael_weight · 2^(k / recency)` (0 = off).
+    pub recency: u64,
+    /// Framing: a typed line that does not start with `*` is learned as `*<you>: line`, and
+    /// Lucy's turn opens with ` *<me>: ` (context only). `raw` turns framing off.
+    pub you: String,
+    pub me: String,
+    pub raw: bool,
+}
+
+/// Weight of the `k`-th byte learned in this talk session.
+// shortcut: the exponent is capped at 2^600 (f64 range); for sessions longer than 600 half-lives, renormalize stored counts instead.
+fn talk_weight(kael_weight: f64, recency: u64, k: u64) -> f64 {
+    match recency {
+        0 => kael_weight,
+        h => kael_weight * 2f64.powf((k as f64 / h as f64).min(600.0)),
+    }
 }
 
 /// Default save path: never the womb itself; `x.bin` -> `x-talk.bin` (a talk save is reused).
@@ -82,9 +101,9 @@ struct Speaker {
 }
 
 impl Speaker {
-    fn new(prev: Option<u8>) -> Self {
+    fn new(prev: Option<u8>, tags: u32) -> Self {
         Self {
-            tags: 0,
+            tags,
             held: Vec::new(),
             prev,
         }
@@ -149,6 +168,11 @@ impl Talk {
             out_path.display()
         );
         let mut stdout = io::stdout();
+        let mut learned = 0u64;
+        ensure!(
+            self.kael_weight.is_finite() && self.kael_weight > 0.0,
+            "--kael-weight must be > 0"
+        );
         loop {
             print!("> ");
             stdout.flush()?;
@@ -179,12 +203,28 @@ impl Talk {
                 }
                 _ => {}
             }
+            if !self.raw && line.first() != Some(&b'*') {
+                line.splice(0..0, format!("*{}: ", self.you).into_bytes());
+            }
             // Learn the line through the same arrival path as the corpus (one Arrive per byte).
             for &b in &line {
+                eng.ctx.weight = talk_weight(self.kael_weight, self.recency, learned);
                 eng.step(&mut std::iter::once(b));
+                learned += 1;
             }
+            eng.ctx.weight = 1.0;
             let p = eng.p.clone();
-            let (text, hs) = self.reply(&mut eng, &p, &mut rng, &mut stdout)?;
+            let mut probs = vec![0.0; 256];
+            let prompt = match self.raw {
+                true => Vec::new(),
+                false => format!(" *{}: ", self.me).into_bytes(),
+            };
+            for &b in &prompt {
+                eng.ctx.predict(&p, &mut probs);
+                eng.ctx.pass(b, &p, &probs);
+            }
+            stdout.write_all(&prompt)?;
+            let (text, hs) = self.reply(&mut eng, &p, &mut rng, &mut stdout, !self.raw)?;
             if text.last() != Some(&b'\n') {
                 // Close Lucy's turn as context, so the next typed line starts a new line.
                 let mut probs = vec![0.0; 256];
@@ -193,7 +233,8 @@ impl Talk {
                 println!();
             }
             if self.entropy {
-                println!("{}", entropy_marks(&text, &hs));
+                let pad = " ".repeat(prompt.len());
+                println!("{pad}{}", entropy_marks(&text, &hs));
             }
         }
         println!();
@@ -212,10 +253,12 @@ impl Talk {
         p: &lucy_core::rules::Params,
         rng: &mut impl rand::Rng,
         out: &mut impl Write,
+        framed: bool,
     ) -> Result<(Vec<u8>, Vec<f64>)> {
         let ctx = &mut eng.ctx;
         let mut probs = vec![0.0; 256];
-        let mut speaker = Speaker::new(ctx.last());
+        // Framed: her tag was given, so any tag she writes starts someone else's turn.
+        let mut speaker = Speaker::new(ctx.last(), u32::from(framed));
         let (mut text, mut hs, mut held_h) = (Vec::new(), Vec::new(), Vec::new());
         let mut mark = None;
         for _ in 0..self.max_bytes {
@@ -298,17 +341,32 @@ mod tests {
 
     #[test]
     fn stops_at_the_second_speaker_tag() {
-        let mut sp = Speaker::new(Some(b'?'));
+        let mut sp = Speaker::new(Some(b'?'), 0);
         let (out, stop) = run(&mut sp, b" *CHI: yeah . *EXP: now I have");
         assert!(stop);
         assert_eq!(out, b" *CHI: yeah . ");
         // Not tags: '*' inside a word, lowercase after '*', a lone "*:".
-        let mut sp = Speaker::new(Some(b' '));
+        let mut sp = Speaker::new(Some(b' '), 0);
         let s = b"a*b *Mom *: ok";
         assert_eq!(run(&mut sp, s), (s.to_vec(), false));
         // A line start counts as a turn start too.
-        let mut sp = Speaker::new(None);
+        let mut sp = Speaker::new(None, 0);
         let (out, stop) = run(&mut sp, b"*MOT: hi .\n*CHI: no");
         assert_eq!((out.as_slice(), stop), (&b"*MOT: hi .\n"[..], true));
+        // Framed (her tag given): the first tag she writes ends the turn.
+        let mut sp = Speaker::new(Some(b' '), 1);
+        assert_eq!(
+            run(&mut sp, b"I am . *MOT: ok"),
+            (b"I am . ".to_vec(), true)
+        );
+    }
+
+    #[test]
+    fn talk_weights() {
+        assert_eq!(talk_weight(1.0, 0, 99), 1.0);
+        assert_eq!(talk_weight(50.0, 0, 99), 50.0);
+        assert_eq!(talk_weight(1.0, 100, 0), 1.0);
+        assert_eq!(talk_weight(1.0, 100, 200), 4.0);
+        assert!(talk_weight(1.0, 1, u64::MAX).is_finite());
     }
 }

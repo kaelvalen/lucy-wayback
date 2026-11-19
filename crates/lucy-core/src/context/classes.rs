@@ -81,8 +81,8 @@ fn mix(x: u64) -> u64 {
 }
 
 impl Classes {
-    pub fn count(&mut self, k: u32, x: u8) {
-        self.cells[k as usize].count(x);
+    pub fn count(&mut self, k: u32, x: u8, w: f64) {
+        self.cells[k as usize].count(x, w);
     }
 
     pub(super) fn get(&mut self, k: u32) -> &mut Cell {

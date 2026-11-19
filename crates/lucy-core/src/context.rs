@@ -72,12 +72,13 @@ impl Cell {
             .map(|i| self.children[i].1)
     }
 
-    fn count(&mut self, x: u8) {
+    /// Count `x` with weight `w` (1 for corpus bytes); visits always count 1.
+    fn count(&mut self, x: u8, w: f64) {
         match self.succ.binary_search_by_key(&x, |&(b, _)| b) {
-            Ok(i) => self.succ[i].1 += 1.0,
-            Err(i) => self.succ.insert(i, (x, 1.0)),
+            Ok(i) => self.succ[i].1 += w,
+            Err(i) => self.succ.insert(i, (x, w)),
         }
-        self.total += 1.0;
+        self.total += w;
         self.visits = self.visits.saturating_add(1);
     }
 
@@ -128,6 +129,11 @@ pub struct Context {
     #[serde(skip)]
     pub deep_visits: u32,
     #[serde(skip)]
+    pub deep_depth: u32,
+    /// Weight of each learned byte (1; `lucy talk --kael-weight/--recency` raise it). Not saved.
+    #[serde(skip, default = "one")]
+    pub weight: f64,
+    #[serde(skip)]
     reach_now: usize,
     #[serde(skip)]
     vote_class: Option<u32>,
@@ -137,6 +143,10 @@ pub struct Context {
     score: Vec<f64>,
     #[serde(skip)]
     order: Vec<u8>,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 /// A saved context position (`Context::mark`).
@@ -159,6 +169,8 @@ impl Default for Context {
             classes: Default::default(),
             entropy: 0.0,
             deep_visits: 0,
+            deep_depth: 0,
+            weight: 1.0,
             reach_now: 0,
             vote_class: None,
             chain: Vec::new(),
@@ -209,7 +221,7 @@ impl Context {
         for &ci in &self.chain {
             let cell = &mut self.cells[ci as usize];
             cell.decay(self.now, t_v);
-            let w = 2f64.powi(cell.depth.min(p.ctx_depth) as i32);
+            let w = 2f64.powi(cell.depth.min(p.vote_depth()) as i32);
             Self::vote(&mut self.score, &mut self.order, cell, w);
         }
         // Class back-off: the deepest classed cell's class votes just below that cell.
@@ -222,7 +234,7 @@ impl Context {
             if let Some((d, k)) = found {
                 let cl = self.classes.get(k);
                 cl.decay(self.now, t_v);
-                let w = p.cls_weight * 2f64.powi(d.min(p.ctx_depth) as i32 - 1);
+                let w = p.cls_weight * 2f64.powi(d.min(p.vote_depth()) as i32 - 1);
                 Self::vote(&mut self.score, &mut self.order, cl, w);
                 self.vote_class = Some(k);
             }
@@ -254,6 +266,7 @@ impl Context {
         self.entropy = h_touched - (N_BYTES - self.order.len()) as f64 * floor * floor.log2();
         let deep = *self.chain.last().unwrap() as usize;
         self.deep_visits = self.cells[deep].visits;
+        self.deep_depth = self.cells[deep].depth;
         guess
     }
 
@@ -279,10 +292,10 @@ impl Context {
         let deep = *self.chain.last().unwrap() as usize;
         let deep_guess = self.cells[deep].best();
         for &ci in &self.chain {
-            self.cells[ci as usize].count(x);
+            self.cells[ci as usize].count(x, self.weight);
         }
         if let Some(k) = self.vote_class {
-            self.classes.count(k, x);
+            self.classes.count(k, x, self.weight);
         }
         let d = self.cells[deep].depth as usize;
         if deep_guess != Some(x)
@@ -408,7 +421,7 @@ impl Context {
             last_t: self.now,
             ..Cell::default()
         };
-        cell.count(x);
+        cell.count(x, self.weight);
         let id = match self.free.pop() {
             Some(id) => {
                 self.cells[id as usize] = cell;

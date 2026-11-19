@@ -120,6 +120,22 @@ enum Cmd {
         idle: u64,
         #[arg(long, default_value_t = 0)]
         seed: u64,
+        /// Each typed byte counts this many times a womb byte (default 1 = off).
+        #[arg(long, default_value_t = 1.0)]
+        kael_weight: f64,
+        /// Recency: earlier evidence (womb and older talk) halves in weight every H talk bytes,
+        /// relative to new talk bytes (0 = off).
+        #[arg(long, default_value_t = 0)]
+        recency: u64,
+        /// Speaker tag for Kael's lines (framing).
+        #[arg(long, default_value = "MOT")]
+        you: String,
+        /// Speaker tag that opens Lucy's turn (framing).
+        #[arg(long, default_value = "CHI")]
+        me: String,
+        /// No framing: lines are learned as typed and Lucy picks her own speaker.
+        #[arg(long)]
+        raw: bool,
     },
     /// Same activity, more total cells: cost must stay ~constant.
     BenchScaling {
@@ -589,6 +605,11 @@ fn main() -> Result<()> {
             entropy,
             idle,
             seed,
+            kael_weight,
+            recency,
+            you,
+            me,
+            raw,
         } => talk::Talk {
             resume,
             save,
@@ -597,6 +618,11 @@ fn main() -> Result<()> {
             entropy,
             idle_secs: idle,
             seed,
+            kael_weight,
+            recency,
+            you,
+            me,
+            raw,
         }
         .run()?,
         Cmd::BenchScaling { a, multipliers } => {
