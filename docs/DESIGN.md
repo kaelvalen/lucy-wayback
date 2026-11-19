@@ -347,6 +347,40 @@ Fold, CHILDES 1 MB (default decay 1e7, 900 k–1 M window):
 - **Pruning by decay does pass the test**: `ctx_t_v` 1e6 gives 70.5 % / 1.505 bits with
   143 701 cells, against 150 743 cells with no decay at the same 70.5 %.
 
+**Chunks (step 4, `ctx_chunk`, off by default).** Boundaries come from one of two rules:
+1. after a non-alphanumeric byte;
+2. from Lucy's own tension: a byte whose surprise `−log2 p(x)` exceeds `ctx_chunk_bits` starts a
+   new chunk, i.e. a transitional-probability dip (Saffran et al. 1996).
+
+The tissue tracks the lengths of the previous and the current partial chunk. The chain may then
+reach back to the start of the previous chunk, up to `ctx_chunk_cap` (24) bytes, instead of K.
+The deepest cell of such a chain is the chunk cell keyed by (previous chunk, current partial
+chunk), and it grows like any other cell. Past depth K the vote weight is capped at `2^K`.
+Uncapped, one count in a depth-15 cell outvoted the whole chain (−0.2 points with spaces, −0.8
+with tension).
+
+CHILDES 1 MB, last window (capped weights):
+
+| | top-1 | bits | cells |
+|---|---|---|---|
+| K 8 | 70.6 % | 1.504 | 150 365 |
+| K 8 + chunks, spaces | 70.6 % | 1.511 | 193 106 |
+| K 8 + chunks, tension 3 bits | 70.7 % | 1.512 | 261 184 |
+| K 4 | 67.9 % | 1.631 | 22 136 |
+| **K 4 + chunks, spaces** | **70.1 %** | 1.521 | 159 871 |
+| **K 4 + chunks, tension 3 bits** | **70.1 %** | **1.516** | 197 564 |
+| K 12 (uniform depth) | 70.2 % | 1.572 | 249 379 |
+
+- **The mechanism works where fixed depth is short.** At K = 4, chunks add +2.2 points and
+  −0.11 bits.
+- **Tension boundaries are as good as spaces.** Lucy's own surprise peaks segment the stream.
+- **At K = 8 chunks are neutral, so they stay off.** Child-directed words are short, and 8 bytes
+  already span most (previous word, partial word) contexts.
+  - Chunk-anchored depth still beats uniform depth: K 12 is worse than K 8.
+- **Not kept: growing the whole path to the anchor at once**, which creates the chunk cell on the
+  first miss. Neutral to −0.1 points, at 1.7–7× the cells.
+- The proposal's +0.7 points with space boundaries is not reproduced at K = 8.
+
 **Exact port first (`a3b0897`).** Successors kept in first-seen order reproduce
 `scripts/context_cells_reference.py` on CHILDES 1 MB at every 100 k checkpoint: identical cell
 counts (27 468 … 152 039), and top-1 and bits equal to every printed digit (70.5 % / 1.517 bits
@@ -359,7 +393,7 @@ it gives 70.5 % / 1.504 bits.
 bytes if that is set: engine (cells, edges, scheduler wheel + overflow heap + per-tick arenas,
 ring, senses, plasticity incl. anchors, logical clock), observatory (window counters, calibrator,
 baselines, metrics hash) and the prober's windows. The format is bincode behind an 8-byte magic
-`LUCYSV01`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
+`LUCYSV02`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
 rebuilt from `Params`, and every RNG draw comes from `stream(seed, id)` at its point of use.
 `--resume PATH --ticks <absolute end>` continues the run: graph flags, seed and params come from
 the save, the corpus skips the `bytes_total` bytes already consumed, and metrics are appended.
@@ -800,10 +834,25 @@ Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 bes
 | 1b native, default (t_v 1e6, budget 2 M) | `277995d` | 70.3 % | 1.516 | 117 278 | ≈ 8 000–16 000 | still spikes into a 32-cell reservoir, which dominates the time |
 | 2 reservoir off the byte path | `7dc2a99` | 70.3 % | 1.516 | 117 278 | ≈ 5 300–10 900 (whole run); 1 650 (tissue alone) | 1 MB in 8.2 s; the observatory's calibrator (2.4 µs) and 256 logits (1 µs) cost more than the tissue |
 | fix: growth gate on visits | `4303646` | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
-| 3 structural sleep (prune + fold, fold off; t_v 1e7) | (3) | 70.6 % | 1.504 | 150 365 | ≈ 2 700–3 250 (whole run, solo) | fold never wins (see Sleep); 1 MB in 3.1 s solo |
+| 3 structural sleep (prune + fold, fold off; t_v 1e7) | `3af9ea1` | 70.6 % | 1.504 | 150 365 | ≈ 2 700–3 250 (whole run, solo) | fold never wins (see Sleep); 1 MB in 3.1 s solo |
+| 4 chunk cells (off by default; K 8 + tension chunks) | (4) | 70.7 % | 1.512 | 261 184 | | +2.2 points at K 4; tension boundaries = spaces |
 
-Decay timescale at 1 MB (no budget): `ctx_t_v` 3e5 → 69.9 % / 1.534 bits, 81 649 cells; 1e5 →
-68.6 % / 1.611, 42 478 cells. A budget of 65 536 cells costs 0.1–0.4 points at 1 MB
+**68 MB (`childes-dialogue1.txt`), context tissue alone** (scratch bench calling `Context::arrive` and
+`sleep` every 1 000 bytes; three runs at once, so ns/byte is noisy; growth gate fixed):
+
+| `ctx_t_v` | 4 MB | 16 MB | 32 MB | 68 MB | bits at 68 MB | live cells at 68 MB | pruned | ns/byte |
+|---|---|---|---|---|---|---|---|---|
+| 1e6 | 70.9 % | 71.9 % | 71.9 % | 71.9 % | 1.361 | 257 k (flat from 16 MB) | 4.5 M | 1 300–2 550 |
+| **1e7 (default)** | 71.1 % | 73.2 % | 73.4 % | 73.5 % | 1.262 | 960 k (near equilibrium) | 1.25 M | 1 400–2 070 |
+| off | 71.1 % | 73.3 % | 73.7 % | 74.1 % | 1.233 | 1.8 M (still growing) | 0 | 1 250–2 110 |
+
+- Accuracy keeps rising with data where the reservoir's D run stayed flat at 32 %.
+- Decay sets an equilibrium cell count; 1e6 is too short (−2.2 points at 68 MB).
+- Per byte the work is O(K), but wall time per byte rises ≈ 1.5× from 0.4 M to 1.8 M cells:
+  the trie leaves the caches.
+
+Decay timescale at 1 MB, before the growth-gate fix (no budget): `ctx_t_v` 3e5 → 69.9 % / 1.534
+bits, 81 649 cells; 1e5 → 68.6 % / 1.611, 42 478 cells. A budget of 65 536 cells costs 0.1–0.4 points at 1 MB
 (70.2 % with decay, 70.1 % without).
 
 ## Next (queued)

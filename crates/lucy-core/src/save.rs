@@ -10,7 +10,7 @@ use crate::kernel::Engine;
 use crate::observe::Observatory;
 
 /// File magic + format version: bump the version whenever a saved struct changes.
-const MAGIC: &[u8; 8] = b"LUCYSV01";
+const MAGIC: &[u8; 8] = b"LUCYSV02";
 
 /// Write atomically (temp file, then rename), so a crash mid-save keeps the previous save.
 pub fn save(path: &Path, eng: &Engine, obs: &Observatory) -> io::Result<()> {

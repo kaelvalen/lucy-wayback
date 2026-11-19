@@ -100,6 +100,13 @@ pub struct Params {
     /// Context cells: in sleep, fold a leaf into its parent when it saves fewer bits than this
     /// over the parent (vitality · KL); 0 = never fold.
     pub ctx_fold_bits: f64,
+    /// Context cells: chunk boundaries (hierarchy). 0 = off, 1 = after non-alphanumeric bytes,
+    /// 2 = tension peaks (a byte more surprising than `ctx_chunk_bits` starts a chunk). With
+    /// chunks on, contexts may reach back to the start of the previous chunk, up to
+    /// `ctx_chunk_cap` bytes.
+    pub ctx_chunk: u32,
+    pub ctx_chunk_bits: f64,
+    pub ctx_chunk_cap: u32,
     /// Context cells: slots each sleep pass visits (fixed, so pruning is O(1) per byte).
     pub ctx_sweep: u32,
     /// Context cells: most live cells (0 = unlimited); at the budget, misses grow nothing.
@@ -158,6 +165,9 @@ impl Default for Params {
             ctx_t_v: 1e7,
             ctx_prune_floor: 0.5,
             ctx_fold_bits: 0.0,
+            ctx_chunk: 0,
+            ctx_chunk_bits: 4.0,
+            ctx_chunk_cap: 24,
             ctx_sweep: 4096,
             ctx_budget: 1 << 21,
         }
@@ -249,11 +259,15 @@ impl Params {
         if self.ctx_depth == 0 {
             return Err("ctx_depth must be >= 1".into());
         }
+        if self.ctx_chunk > 2 || self.ctx_chunk_cap > 255 {
+            return Err("ctx_chunk must be 0, 1 or 2 and ctx_chunk_cap <= 255".into());
+        }
         for (name, x) in [
             ("ctx_grow_min", self.ctx_grow_min),
             ("ctx_t_v", self.ctx_t_v),
             ("ctx_prune_floor", self.ctx_prune_floor),
             ("ctx_fold_bits", self.ctx_fold_bits),
+            ("ctx_chunk_bits", self.ctx_chunk_bits),
         ] {
             if !(x.is_finite() && x >= 0.0) {
                 return Err(format!("{name} must be finite and >= 0, got {x}"));

@@ -103,8 +103,10 @@ pub struct Context {
     cells: Vec<Cell>,
     free: Vec<u32>,
     live: usize,
-    /// The last `ctx_depth` bytes, oldest first.
+    /// The last `max(ctx_depth, ctx_chunk_cap)` bytes, oldest first.
     hist: Vec<u8>,
+    /// Chunks (hierarchy): length of the previous chunk and of the current partial one.
+    chunk: [u32; 2],
     /// Bytes seen (the decay clock).
     now: u64,
     /// Next slot the sleep sweep visits.
@@ -129,6 +131,7 @@ impl Default for Context {
             free: Vec::new(),
             live: 1,
             hist: Vec::new(),
+            chunk: [0; 2],
             now: 0,
             cursor: 1,
             grown: 0,
@@ -156,8 +159,9 @@ impl Context {
         // SPREAD: the chain of existing suffixes of the history, shortest first.
         self.chain.clear();
         self.chain.push(0);
+        let reach = self.reach(p);
         let mut c = 0usize;
-        for &y in self.hist.iter().rev() {
+        for &y in self.hist.iter().rev().take(reach) {
             match self.cells[c].child(y) {
                 Some(ch) => {
                     self.chain.push(ch);
@@ -178,7 +182,7 @@ impl Context {
             if t <= 0.0 {
                 continue;
             }
-            let w = (t / (t + 2.0)) * 2f64.powi(cell.depth as i32) / t;
+            let w = (t / (t + 2.0)) * 2f64.powi(cell.depth.min(p.ctx_depth) as i32) / t;
             for &(b, v) in &cell.succ {
                 // w * v > 0, so a zero score means first touch.
                 if self.score[b as usize] == 0.0 {
@@ -209,18 +213,47 @@ impl Context {
         }
         let d = self.cells[deep].depth as usize;
         if deep_guess != Some(x)
-            && d < self.hist.len()
+            && d < reach
             && f64::from(self.cells[deep].visits) >= p.ctx_grow_min
         {
             let y = self.hist[self.hist.len() - 1 - d];
             self.grow(deep, y, x, p);
         }
+        // Chunk boundary: x starts a new chunk after a non-alphanumeric byte (mode 1), or when
+        // it was surprising, a tension peak (mode 2).
+        let boundary = match p.ctx_chunk {
+            1 => {
+                x.is_ascii_alphanumeric()
+                    && self.hist.last().is_some_and(|b| !b.is_ascii_alphanumeric())
+            }
+            2 => -f64::from(probs[x as usize]).log2() > p.ctx_chunk_bits,
+            _ => false,
+        };
+        self.chunk = match boundary {
+            true => [self.chunk[1], 1],
+            false => [self.chunk[0], self.chunk[1].saturating_add(1)],
+        };
         self.hist.push(x);
-        if self.hist.len() > p.ctx_depth as usize {
+        let keep = match p.ctx_chunk {
+            0 => p.ctx_depth,
+            _ => p.ctx_depth.max(p.ctx_chunk_cap),
+        };
+        if self.hist.len() > keep as usize {
             self.hist.remove(0);
         }
         self.now += 1;
         guess
+    }
+
+    /// How far back the chain may reach: K bytes, or with chunks on, back to the start of the
+    /// previous chunk (capped). Deeper contexts exist only where they are chunk-anchored.
+    fn reach(&self, p: &Params) -> usize {
+        let k = p.ctx_depth as usize;
+        let r = match p.ctx_chunk {
+            0 => k,
+            _ => k.max((self.chunk[0] + self.chunk[1]).min(p.ctx_chunk_cap) as usize),
+        };
+        r.min(self.hist.len())
     }
 
     fn grow(&mut self, parent: usize, y: u8, x: u8, p: &Params) {
@@ -341,6 +374,7 @@ impl Context {
             h.u64(f as u64);
         }
         h.bytes(&self.hist);
+        h.u64(((self.chunk[0] as u64) << 32) | self.chunk[1] as u64);
         h.u64(self.now);
         h.u64(self.cursor as u64);
     }
@@ -432,6 +466,33 @@ mod tests {
         assert_eq!(ctx.folded, 1);
         assert_eq!(ctx.cells[0].children, vec![(b'y', 2)]);
         assert_eq!(ctx.cells[1].depth, DEAD);
+    }
+
+    #[test]
+    fn chunks_let_the_chain_reach_back_to_the_previous_chunk() {
+        let base = Params {
+            ctx_depth: 2,
+            ..Params::default()
+        };
+        let mut ctx = Context::default();
+        feed(&mut ctx, &base, b"kitchen table");
+        assert_eq!(ctx.reach(&base), 2);
+        let p = Params {
+            ctx_chunk: 1,
+            ..base
+        };
+        let mut ctx = Context::default();
+        feed(&mut ctx, &p, b"kitchen table");
+        // Previous chunk "kitchen " (8) + partial "table" (5).
+        assert_eq!(ctx.chunk, [8, 5]);
+        assert_eq!(ctx.reach(&p), 13);
+        assert_eq!(
+            ctx.reach(&Params {
+                ctx_chunk_cap: 6,
+                ..p.clone()
+            }),
+            6
+        );
     }
 
     #[test]
