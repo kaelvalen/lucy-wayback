@@ -3,3 +3,4 @@
 *.jsonl
 __pycache__/
 /corpus
+!tests/fixtures/*.jsonl
