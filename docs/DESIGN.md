@@ -399,13 +399,19 @@ it gives 70.5 % / 1.504 bits.
   growth and periodic sleep, exactly as for corpus bytes. `Engine::wake` schedules the next
   arrival when the corpus had run dry.
 - **Lucy then continues the text.** Each byte is sampled from the blended prediction
-  (`Context::generate`; `--temperature`, 0 = top-1) until a newline or `--max-bytes`. If her
-  first byte is a newline, she writes the next line. Her bytes go through `Context::pass`:
+  (`Context::sample`; `--temperature`, 0 = top-1) until a newline, `--max-bytes`, or another
+  speaker's tag. If her first byte is a newline, she writes the next line.
+- **One speaker per turn.** The first speaker tag in her reply is hers. A later `*` at a turn
+  start (after a space or newline) is held back. If it completes `*[A-Z]+:`, the context
+  returns to its position before the `*` (`Context::mark`/`rewind`, history and chunk state
+  only) and the turn ends. So the other speaker's tag is neither printed nor kept as context.
+  If the held run turns out not to be a tag, it is printed and the turn goes on. Her bytes go through `Context::pass`:
   history and chunk boundaries move, but no count, visit or cell is added, and the decay clock
   does not advance. So there is no self-reinforcement (test `generation_adds_no_evidence`). A
   turn that did not end in a newline is closed by a newline, again as context only.
-- **`--entropy`** prints, under each reply, the entropy of every byte in whole bits (step 6
-  metric).
+- **`--entropy`** prints, under each reply, one mark per printed character (step 6 metric): the
+  highest entropy of its UTF-8 bytes in whole bits. An invalid byte run counts as one U+FFFD.
+  Wide characters (CJK, emoji) still misalign, since that needs a display-width table.
 - **Sleep and save.** `/sleep`, or `--idle` seconds without input (default 120), runs a full
   sleep: every slot visited once. `/save` saves, and so does exit (`/quit` or EOF). The default
   path is `<resume>-talk.bin`, never the womb itself.

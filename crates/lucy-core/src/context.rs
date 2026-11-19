@@ -139,6 +139,9 @@ pub struct Context {
     order: Vec<u8>,
 }
 
+/// A saved context position (`Context::mark`).
+pub struct Mark(Vec<u8>, [u32; 2]);
+
 impl Default for Context {
     fn default() -> Self {
         Self {
@@ -339,29 +342,48 @@ impl Context {
     ) {
         let mut probs = vec![0.0; N_BYTES];
         for _ in 0..max {
-            let top = self.predict(p, &mut probs);
-            let x = match temperature > 0.0 {
-                false => top,
-                true => {
-                    let w: Vec<f64> = probs
-                        .iter()
-                        .map(|&q| f64::from(q).powf(1.0 / temperature))
-                        .collect();
-                    let mut r = rng.random::<f64>() * w.iter().sum::<f64>();
-                    w.iter()
-                        .position(|&v| {
-                            r -= v;
-                            r < 0.0
-                        })
-                        .unwrap_or(N_BYTES - 1) as u8
-                }
-            };
+            let x = self.sample(p, temperature, rng, &mut probs);
             out(x, self.entropy);
             self.pass(x, p, &probs);
             if x == stop {
                 break;
             }
         }
+    }
+
+    /// Draw the next byte from the blended prediction at `temperature` (0 = top-1). Fills
+    /// `probs` and `entropy`; learns nothing and does not move the history (`pass` does).
+    pub fn sample(
+        &mut self,
+        p: &Params,
+        temperature: f64,
+        rng: &mut impl rand::Rng,
+        probs: &mut [S],
+    ) -> u8 {
+        let top = self.predict(p, probs);
+        if temperature <= 0.0 {
+            return top;
+        }
+        let w: Vec<f64> = probs
+            .iter()
+            .map(|&q| f64::from(q).powf(1.0 / temperature))
+            .collect();
+        let mut r = rng.random::<f64>() * w.iter().sum::<f64>();
+        w.iter()
+            .position(|&v| {
+                r -= v;
+                r < 0.0
+            })
+            .unwrap_or(N_BYTES - 1) as u8
+    }
+
+    /// The context position (history and chunk state), to undo `pass`es with `rewind`.
+    pub fn mark(&self) -> Mark {
+        Mark(self.hist.clone(), self.chunk)
+    }
+
+    pub fn rewind(&mut self, m: Mark) {
+        (self.hist, self.chunk) = (m.0, m.1);
     }
 
     /// How far back the chain may reach: K bytes, or with chunks on, back to the start of the

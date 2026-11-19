@@ -193,6 +193,7 @@ dependencies = [
  "anyhow",
  "clap",
  "lucy-core",
+ "rand",
  "rayon",
  "serde_json",
 ]

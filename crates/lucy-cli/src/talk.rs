@@ -36,14 +36,86 @@ fn talk_path(resume: &Path) -> PathBuf {
     }
 }
 
-/// One character per byte: entropy in whole bits, `+` for 10 or more.
-fn entropy_marks(hs: &[f64]) -> String {
-    hs.iter()
-        .map(|&h| match h.round() as u32 {
-            n @ 0..=9 => char::from_digit(n, 10).unwrap(),
-            _ => '+',
+/// One mark per printed character (as a UTF-8 terminal shows `text`): the highest entropy of
+/// its bytes in whole bits, `+` for 10 or more. An invalid sequence prints as one U+FFFD.
+// shortcut: assumes one column per character; wide (CJK, emoji) characters need unicode-width.
+fn entropy_marks(text: &[u8], hs: &[f64]) -> String {
+    let mark = |h: f64| match h.round() as u32 {
+        n @ 0..=9 => char::from_digit(n, 10).unwrap(),
+        _ => '+',
+    };
+    // (bytes, shown) per character; a newline shows no mark.
+    let mut units = Vec::new();
+    for chunk in text.utf8_chunks() {
+        units.extend(chunk.valid().chars().map(|c| (c.len_utf8(), c != '\n')));
+        if !chunk.invalid().is_empty() {
+            units.push((chunk.invalid().len(), true));
+        }
+    }
+    let mut i = 0;
+    units
+        .into_iter()
+        .filter_map(|(n, shown)| {
+            let h = hs[i..i + n].iter().copied().fold(0.0, f64::max);
+            i += n;
+            shown.then(|| mark(h))
         })
         .collect()
+}
+
+/// What to do with a sampled byte while watching for another speaker's tag.
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// Print these bytes now (the byte itself, or a held run that turned out not to be a tag).
+    Emit(Vec<u8>),
+    /// Maybe the start of a tag: hold it back.
+    Hold,
+    /// A second speaker tag (`*` + uppercase + `:` at a turn start): Lucy's turn is over.
+    Stop,
+}
+
+/// Lucy's first speaker tag is her own turn; the next one is someone else's.
+struct Speaker {
+    tags: u32,
+    held: Vec<u8>,
+    prev: Option<u8>,
+}
+
+impl Speaker {
+    fn new(prev: Option<u8>) -> Self {
+        Self {
+            tags: 0,
+            held: Vec::new(),
+            prev,
+        }
+    }
+
+    fn push(&mut self, x: u8) -> Step {
+        let at_turn_start = self.prev.is_none_or(|b| b == b' ' || b == b'\n');
+        self.prev = Some(x);
+        if self.held.is_empty() {
+            return match x == b'*' && at_turn_start {
+                true => {
+                    self.held.push(x);
+                    Step::Hold
+                }
+                false => Step::Emit(vec![x]),
+            };
+        }
+        self.held.push(x);
+        let name = &self.held[1..];
+        match x {
+            b':' if name.len() > 1 => {
+                self.tags += 1;
+                match self.tags {
+                    1 => Step::Emit(std::mem::take(&mut self.held)),
+                    _ => Step::Stop,
+                }
+            }
+            b'A'..=b'Z' => Step::Hold,
+            _ => Step::Emit(std::mem::take(&mut self.held)),
+        }
+    }
 }
 
 impl Talk {
@@ -112,25 +184,8 @@ impl Talk {
                 eng.step(&mut std::iter::once(b));
             }
             let p = eng.p.clone();
-            let mut hs = Vec::new();
-            let mut ended = false;
-            // If her first byte ends the line, the text goes on: she writes the next line.
-            while hs.len() < self.max_bytes && (hs.is_empty() || (ended && hs.len() == 1)) {
-                eng.ctx.generate(
-                    &p,
-                    self.temperature,
-                    self.max_bytes - hs.len(),
-                    b'\n',
-                    &mut rng,
-                    |x, h| {
-                        hs.push(h);
-                        ended = x == b'\n';
-                        let _ = stdout.write_all(&[x]);
-                        let _ = stdout.flush();
-                    },
-                );
-            }
-            if !ended {
+            let (text, hs) = self.reply(&mut eng, &p, &mut rng, &mut stdout)?;
+            if text.last() != Some(&b'\n') {
                 // Close Lucy's turn as context, so the next typed line starts a new line.
                 let mut probs = vec![0.0; 256];
                 eng.ctx.predict(&p, &mut probs);
@@ -138,11 +193,62 @@ impl Talk {
                 println!();
             }
             if self.entropy {
-                println!("{}", entropy_marks(&hs));
+                println!("{}", entropy_marks(&text, &hs));
             }
         }
         println!();
         save_to(&out_path, &eng, &obs)
+    }
+}
+
+impl Talk {
+    /// Lucy's turn: sample bytes (context only) until a newline, `max_bytes`, or another
+    /// speaker's tag, which is rewound so it is neither printed nor kept as context. If her
+    /// first byte ends the line, the text goes on and she writes the next line. Returns the
+    /// printed bytes and their entropies.
+    fn reply(
+        &self,
+        eng: &mut Engine,
+        p: &lucy_core::rules::Params,
+        rng: &mut impl rand::Rng,
+        out: &mut impl Write,
+    ) -> Result<(Vec<u8>, Vec<f64>)> {
+        let ctx = &mut eng.ctx;
+        let mut probs = vec![0.0; 256];
+        let mut speaker = Speaker::new(ctx.last());
+        let (mut text, mut hs, mut held_h) = (Vec::new(), Vec::new(), Vec::new());
+        let mut mark = None;
+        for _ in 0..self.max_bytes {
+            let before = speaker.held.is_empty().then(|| ctx.mark());
+            let x = ctx.sample(p, self.temperature, rng, &mut probs);
+            held_h.push(ctx.entropy);
+            match speaker.push(x) {
+                Step::Stop => {
+                    ctx.rewind(mark.take().expect("a held tag has a mark"));
+                    return Ok((text, hs));
+                }
+                Step::Hold => {
+                    mark = mark.or(before);
+                    ctx.pass(x, p, &probs);
+                }
+                Step::Emit(bytes) => {
+                    ctx.pass(x, p, &probs);
+                    mark = None;
+                    out.write_all(&bytes)?;
+                    out.flush()?;
+                    text.extend(bytes);
+                    hs.append(&mut held_h);
+                    if x == b'\n' && text.len() > 1 {
+                        break;
+                    }
+                }
+            }
+        }
+        // Out of bytes in the middle of a held run: it is context already, so show it.
+        out.write_all(&speaker.held)?;
+        text.append(&mut speaker.held);
+        hs.append(&mut held_h);
+        Ok((text, hs))
     }
 }
 
@@ -172,6 +278,37 @@ mod tests {
             talk_path(Path::new("runs/womb-talk.bin")),
             Path::new("runs/womb-talk.bin")
         );
-        assert_eq!(entropy_marks(&[0.2, 3.6, 12.0]), "04+");
+        assert_eq!(entropy_marks(b"ab ", &[0.2, 3.6, 12.0]), "04+");
+        // "é" is two bytes but one column; an invalid byte prints as one U+FFFD; '\n' none.
+        assert_eq!(entropy_marks("é!".as_bytes(), &[1.0, 5.0, 2.0]), "52");
+        assert_eq!(entropy_marks(b"\xffa\n", &[3.0, 1.0, 9.0]), "31");
+    }
+
+    fn run(speaker: &mut Speaker, s: &[u8]) -> (Vec<u8>, bool) {
+        let mut out = Vec::new();
+        for &x in s {
+            match speaker.push(x) {
+                Step::Emit(b) => out.extend(b),
+                Step::Hold => {}
+                Step::Stop => return (out, true),
+            }
+        }
+        (out, false)
+    }
+
+    #[test]
+    fn stops_at_the_second_speaker_tag() {
+        let mut sp = Speaker::new(Some(b'?'));
+        let (out, stop) = run(&mut sp, b" *CHI: yeah . *EXP: now I have");
+        assert!(stop);
+        assert_eq!(out, b" *CHI: yeah . ");
+        // Not tags: '*' inside a word, lowercase after '*', a lone "*:".
+        let mut sp = Speaker::new(Some(b' '));
+        let s = b"a*b *Mom *: ok";
+        assert_eq!(run(&mut sp, s), (s.to_vec(), false));
+        // A line start counts as a turn start too.
+        let mut sp = Speaker::new(None);
+        let (out, stop) = run(&mut sp, b"*MOT: hi .\n*CHI: no");
+        assert_eq!((out.as_slice(), stop), (&b"*MOT: hi .\n"[..], true));
     }
 }
