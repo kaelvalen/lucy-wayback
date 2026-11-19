@@ -325,6 +325,45 @@ impl Context {
         self.hist.last().copied()
     }
 
+    /// Continue the text: sample each byte from the blended prediction at `temperature`
+    /// (0 = top-1), up to `max` bytes or through `stop`. Every byte becomes context only
+    /// (`pass`), never evidence. `out` gets each byte with the entropy (bits) it was drawn from.
+    pub fn generate(
+        &mut self,
+        p: &Params,
+        temperature: f64,
+        max: usize,
+        stop: u8,
+        rng: &mut impl rand::Rng,
+        mut out: impl FnMut(u8, f64),
+    ) {
+        let mut probs = vec![0.0; N_BYTES];
+        for _ in 0..max {
+            let top = self.predict(p, &mut probs);
+            let x = match temperature > 0.0 {
+                false => top,
+                true => {
+                    let w: Vec<f64> = probs
+                        .iter()
+                        .map(|&q| f64::from(q).powf(1.0 / temperature))
+                        .collect();
+                    let mut r = rng.random::<f64>() * w.iter().sum::<f64>();
+                    w.iter()
+                        .position(|&v| {
+                            r -= v;
+                            r < 0.0
+                        })
+                        .unwrap_or(N_BYTES - 1) as u8
+                }
+            };
+            out(x, self.entropy);
+            self.pass(x, p, &probs);
+            if x == stop {
+                break;
+            }
+        }
+    }
+
     /// How far back the chain may reach: K bytes, or with chunks on, back to the start of the
     /// previous chunk (capped). Deeper contexts exist only where they are chunk-anchored.
     fn reach(&self, p: &Params) -> usize {
@@ -413,6 +452,12 @@ impl Context {
             removed += 1;
         }
         removed
+    }
+
+    /// A full sleep: enough passes to visit every slot once.
+    pub fn sleep_all(&mut self, p: &Params) -> u64 {
+        let passes = self.cells.len().div_ceil(p.ctx_sweep.max(1) as usize);
+        (0..passes).map(|_| self.sleep(p)).sum()
     }
 
     /// Bits a leaf saves over its parent on the evidence it holds (MDL): vitality times
@@ -581,6 +626,31 @@ mod tests {
             }),
             6
         );
+    }
+
+    /// Lucy's own output is context, never evidence: no count, visit or cell is added.
+    #[test]
+    fn generation_adds_no_evidence() {
+        let p = Params::default();
+        let mut ctx = Context::default();
+        feed(
+            &mut ctx,
+            &p,
+            &b"*MOT: where is the ball ? *CHI: there .\n".repeat(30),
+        );
+        let evidence = |c: &Context| {
+            let v: u64 = c.cells.iter().map(|x| u64::from(x.visits)).sum();
+            let n: usize = c.cells.iter().map(|x| x.succ.len()).sum();
+            (c.cells(), v, n, c.now)
+        };
+        let before = evidence(&ctx);
+        let mut text = Vec::new();
+        let mut rng = crate::seed::stream(1, 2);
+        ctx.generate(&p, 0.0, 100, b'\n', &mut rng, |x, _| text.push(x));
+        assert_eq!(evidence(&ctx), before);
+        assert_eq!(text, b"*MOT: where is the ball ? *CHI: there .\n");
+        ctx.generate(&p, 1.0, 50, b'\n', &mut rng, |_, h| assert!(h.is_finite()));
+        assert_eq!(evidence(&ctx), before);
     }
 
     #[test]

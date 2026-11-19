@@ -17,6 +17,7 @@ use lucy_core::seed::{self, SeedConfig};
 use serde_json::json;
 
 mod sweep;
+mod talk;
 
 #[derive(Parser)]
 #[command(
@@ -95,6 +96,30 @@ enum Cmd {
         classes: usize,
         #[arg(long, default_value_t = 5)]
         sweeps: usize,
+    },
+    /// Talk to a saved context tissue: each typed line is learned, then Lucy continues the
+    /// text (her own bytes are context, never evidence). /sleep, /save, /quit; saves on exit.
+    Talk {
+        /// The tissue to wake (a `--save` of a context-tissue run).
+        #[arg(long)]
+        resume: PathBuf,
+        /// Where to save (default: `<resume>-talk.bin`, never the womb itself).
+        #[arg(long)]
+        save: Option<PathBuf>,
+        /// Sampling temperature (0 = always the top-1 byte).
+        #[arg(long, default_value_t = 0.7)]
+        temperature: f64,
+        /// Most bytes Lucy writes per turn (she also stops at a newline).
+        #[arg(long, default_value_t = 200)]
+        max_bytes: usize,
+        /// Under each reply, the entropy of every byte in whole bits.
+        #[arg(long)]
+        entropy: bool,
+        /// Sleep after this many idle seconds (0 = only on /sleep).
+        #[arg(long, default_value_t = 120)]
+        idle: u64,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
     },
     /// Same activity, more total cells: cost must stay ~constant.
     BenchScaling {
@@ -556,6 +581,24 @@ fn main() -> Result<()> {
             summary(&o);
             println!("pass 2 metrics -> {}", metrics.display());
         }
+        Cmd::Talk {
+            resume,
+            save,
+            temperature,
+            max_bytes,
+            entropy,
+            idle,
+            seed,
+        } => talk::Talk {
+            resume,
+            save,
+            temperature,
+            max_bytes,
+            entropy,
+            idle_secs: idle,
+            seed,
+        }
+        .run()?,
         Cmd::BenchScaling { a, multipliers } => {
             let s = a.setup()?;
             ensure!(

@@ -392,6 +392,24 @@ counts (27 468 … 152 039), and top-1 and bits equal to every printed digit (70
 at 1 MB). The native version sorts lists by byte, so ties go to the lowest byte; with decay off
 it gives 70.5 % / 1.504 bits.
 
+## `lucy talk` (step 7)
+
+`lucy talk --resume <tissue.bin>` wakes a saved context tissue in a REPL:
+- **A typed line is learned** through the normal arrival path, one Arrive per byte: counts,
+  growth and periodic sleep, exactly as for corpus bytes. `Engine::wake` schedules the next
+  arrival when the corpus had run dry.
+- **Lucy then continues the text.** Each byte is sampled from the blended prediction
+  (`Context::generate`; `--temperature`, 0 = top-1) until a newline or `--max-bytes`. If her
+  first byte is a newline, she writes the next line. Her bytes go through `Context::pass`:
+  history and chunk boundaries move, but no count, visit or cell is added, and the decay clock
+  does not advance. So there is no self-reinforcement (test `generation_adds_no_evidence`). A
+  turn that did not end in a newline is closed by a newline, again as context only.
+- **`--entropy`** prints, under each reply, the entropy of every byte in whole bits (step 6
+  metric).
+- **Sleep and save.** `/sleep`, or `--idle` seconds without input (default 120), runs a full
+  sleep: every slot visited once. `/save` saves, and so does exit (`/quit` or EOF). The default
+  path is `<resume>-talk.bin`, never the womb itself.
+
 ## Save/resume (`save.rs`)
 
 `--save PATH` writes the whole run state at the end of the run, and also every `--save-every`
@@ -845,7 +863,7 @@ Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 bes
 | fix: growth gate on visits | `4303646` | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
 | 3 structural sleep (prune + fold, fold off; t_v 1e7) | `3af9ea1` | 70.6 % | 1.504 | 150 365 | ≈ 2 700–3 250 (whole run, solo) | fold never wins (see Sleep); 1 MB in 3.1 s solo |
 | 4 chunk cells (off by default; K 8 + tension chunks) | `f6a1e4a` | 70.7 % | 1.512 | 261 184 | | +2.2 points at K 4; tension boundaries = spaces |
-| 5 class cells (off by default; similarity, weight 1) | (5) | 70.7 % | 1.477 | 150 365 + 4 096 classes | | random control 1.572 bits; offline bound 70.8 % / 1.457 |
+| 5 class cells (off by default; similarity, weight 1) | `58b6491` | 70.7 % | 1.477 | 150 365 + 4 096 classes | | random control 1.572 bits; offline bound 70.8 % / 1.457 |
 
 **68 MB (`childes-dialogue1.txt`), context tissue alone** (scratch bench calling `Context::arrive` and
 `sleep` every 1 000 bytes; three runs at once, so ns/byte is noisy; growth gate fixed):

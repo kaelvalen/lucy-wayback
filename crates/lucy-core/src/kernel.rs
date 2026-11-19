@@ -94,6 +94,15 @@ impl Engine {
         self.sched.pending()
     }
 
+    /// After the source ran dry (no arrival pending), schedule the next byte arrival so new
+    /// input can be fed with `step`.
+    pub fn wake(&mut self) {
+        if self.sched.pending() == 0 {
+            self.sched
+                .push_arrive(self.now + self.senses.ticks_per_byte);
+        }
+    }
+
     pub fn scheduler(&self) -> &Scheduler {
         &self.sched
     }
