@@ -857,11 +857,65 @@ bits, 81 649 cells; 1e5 → 68.6 % / 1.611, 42 478 cells. A budget of 65 536 cel
 
 ## Next (queued)
 
-0. ~~Full save/resume~~ done (`save.rs`, see Save/resume). Next steps follow `docs/PROPOSAL-v2.md`.
-1. Wiring for the bigram path: growth currently picks only 3 % bigram-path in-edges. Next to
-   try is ranking candidates by lift instead of excess. Goal: routing > bigram (41.2 %).
-2. C's routing collapse (and C + B's local runaways): open, see above.
-3. f16/bf16 W/Q storage: revisit once routing clears bigram, as a new baseline tag.
+v2 order (`docs/PROPOSAL-v2.md`): steps 0–4 are done (see Context cells and the v2 table).
+The Phase 1 reservoir items are paused while the reservoir is off the byte path: bigram-path
+wiring, C's routing collapse, f16/bf16 W/Q.
+
+### Step 5 (design for review, not built): class cells from successor similarity
+
+**Target.** The weakest byte class is word-initial bytes. Current tissue (default decay):
+
+| | word-initial | inside a word | non-alphanumeric |
+|---|---|---|---|
+| CHILDES 1 MB | 29.2 % | 72.7 % | 86.0 % |
+| 68 MB, last MiB | 32.4 % | 79.3 % | 88.5 % |
+
+Which word comes next is where memory runs out and generalization has to start.
+
+**Prior art (honest).** Grouping contexts by the distribution of what follows them is
+distributional clustering. Brown et al. 1992 built class-based n-grams from successor mutual
+information; Pereira, Tishby & Lee 1993 clustered distributions. Gains are known to be largest
+for rare contexts and on sparse data, and smaller on repetitive data like CHILDES. What would be
+new is doing it online, in sleep, inside a tension-grown context graph.
+
+**Design.**
+0. *Instrument first (cheap, its own commit).* The observatory reports top-1 and bits by byte
+   class (word-initial, inside, non-alphanumeric). It also reports accuracy split by the
+   deepest cell's visits (< 3, 3–15, ≥ 16). These are the acceptance numbers for this step.
+1. *Which cells get a class.* Cells with ≥ `cls_min_visits` (16) undecayed visits. Rare deep
+   contexts are not classified directly. Their word-aligned suffix cell is: for "…the zebra␣"
+   that is "zebra␣", which is in the same chain and has seen every occurrence of the word.
+2. *Sketch and matching, in the sleep sweep only, O(1) per byte.*
+   - A cell's sketch is its successor distribution truncated to the top 8 bytes and
+     renormalized.
+   - Candidate classes come from an LSH bucket keyed by the cell's sorted top-2 successors. It
+     is a sorted map (deterministic, never iterated by hash).
+   - The cell joins the nearest candidate class within Hellinger distance `cls_radius` (0.3).
+     Otherwise it founds a new class while under `cls_budget` (4096).
+   - A cell whose sketch drifts beyond the radius leaves on a later visit. A class with no
+     members dies.
+3. *Class evidence is pooled online, not in sleep.* At each arrival, the deepest classed cell
+   in the chain has its class count x: one extra update per byte. Sleep only changes membership
+   and never adds evidence, so negative result 1 still holds.
+4. *Vote: back off to the class before the shorter context.* The class votes as an extra
+   chain member at the depth of the cell it stands in for, with weight
+   `cls_weight · T_c/(T_c+2) · 2^(d−1) / T_c`. It ranks below that cell and above its parent;
+   `cls_weight` is swept over {0.25, 0.5, 1}.
+
+**Acceptance.**
+- Word-initial top-1 above today's 29.2 % (1 MB) and 32.4 % (68 MB, last MiB).
+- Higher accuracy where the deepest cell has < 3 visits.
+- Overall top-1 and bits not worse.
+- Control: random class assignment with the same class sizes. The gain must come from
+  similarity, not from extra voters.
+
+**Risks.**
+- On CHILDES the gain may be small, because the data is repetitive and memorization already
+  covers a lot.
+- Byte-level successors (the next letter) may be too coarse a signal of word similarity. If so,
+  the fallback is to sketch the successor *chunk* (the next word's first 2–3 bytes, read from
+  the cell's descendants in the forward direction). That needs chunk tracking (step 4) and costs
+  more.
 
 ## Performance
 
