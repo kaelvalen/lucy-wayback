@@ -91,7 +91,7 @@ pub struct Params {
     pub tissue: Tissue,
     /// Context cells: deepest context in bytes (K).
     pub ctx_depth: u32,
-    /// Context cells: evidence (count) the deepest cell needs before a miss grows a child.
+    /// Context cells: visits (undecayed) the deepest cell needs before a miss grows a child.
     pub ctx_grow_min: f64,
     /// Context cells: decay timescale of successor counts, in bytes (0 = never decay).
     pub ctx_t_v: f64,

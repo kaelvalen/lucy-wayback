@@ -40,6 +40,8 @@ struct Cell {
     last_t: u64,
     /// Sum of `succ` counts.
     total: f64,
+    /// Times this context was seen (undecayed evidence: the growth gate).
+    visits: u32,
     /// Byte one step further into the past -> child cell, sorted by byte.
     children: Vec<(u8, u32)>,
     /// What followed this context and how often (decayed), sorted by byte.
@@ -71,6 +73,7 @@ impl Cell {
             Err(i) => self.succ.insert(i, (x, 1.0)),
         }
         self.total += 1.0;
+        self.visits = self.visits.saturating_add(1);
     }
 
     /// Bring the counts to byte time `now`.
@@ -203,7 +206,9 @@ impl Context {
             self.cells[ci as usize].count(x);
         }
         let d = self.cells[deep].depth as usize;
-        if deep_guess != Some(x) && d < self.hist.len() && self.cells[deep].total >= p.ctx_grow_min
+        if deep_guess != Some(x)
+            && d < self.hist.len()
+            && f64::from(self.cells[deep].visits) >= p.ctx_grow_min
         {
             let y = self.hist[self.hist.len() - 1 - d];
             self.grow(deep, y, x, p);
@@ -290,6 +295,7 @@ impl Context {
             h.u64(((c.parent as u64) << 32) | c.depth as u64);
             h.u64(c.last_t);
             h.u64(c.total.to_bits());
+            h.u64(c.visits as u64);
             for &(b, ch) in &c.children {
                 h.u64(((b as u64) << 32) | ch as u64);
             }
