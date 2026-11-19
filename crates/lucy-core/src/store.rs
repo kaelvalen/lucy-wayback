@@ -18,7 +18,7 @@ pub type CellId = Id;
 pub type EdgeId = Id;
 
 /// Slot allocator shared by cells and edges: LIFO free list (deterministic) + generations.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Slots {
     generation: Vec<u32>,
     alive: Vec<bool>,
@@ -100,7 +100,7 @@ pub enum Kind {
 
 /// Ancestry of activity: which byte (1-based arrival number, 0 = none) started the wave and how
 /// many hops it has travelled. Merge: the newer byte wins; same byte keeps the shortest path.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Wave {
     pub origin: u64,
     pub depth: u32,
@@ -127,7 +127,7 @@ impl Wave {
 }
 
 /// Decayed sum of the messages one in-edge contributed since the cell last fired.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Credit {
     pub edge: EdgeId,
     pub m: V,
@@ -144,7 +144,7 @@ pub struct CellInit {
 }
 
 /// Cell columns (struct of arrays), indexed by `Id::idx`.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CellStore {
     pub slots: Slots,
     pub kind: Vec<Kind>,
@@ -237,7 +237,7 @@ impl CellStore {
 }
 
 /// Edge columns, indexed by `Id::idx`.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EdgeStore {
     pub slots: Slots,
     pub src: Vec<u32>,
@@ -247,7 +247,7 @@ pub struct EdgeStore {
     pub last_t: Vec<u64>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Graph {
     pub cells: CellStore,
     pub edges: EdgeStore,

@@ -26,7 +26,7 @@ pub const RESERVOIR: usize = 1024;
 /// current beta first (prequential, so the reported surprise is honest), then beta takes a damped
 /// stochastic Newton step on the log-loss: `dL/dbeta = E_p[x] - x_true`,
 /// `d2L/dbeta2 = Var_p[x]` (running mean).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Calibrator {
     pub beta: f64,
     curvature: f64,
@@ -80,7 +80,7 @@ impl Calibrator {
 /// Lucy's next-byte accuracy and surprise, measured on exactly the same stream and windows.
 /// Top-1 is a running argmax per context (first byte to reach the max wins ties); code length
 /// uses the KT estimator `(n_ctx,b + 1/2) / (n_ctx + 128)`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CountModel<const ORDER: usize> {
     counts: Vec<u32>,
     totals: Vec<u32>,
@@ -124,7 +124,7 @@ impl<const ORDER: usize> CountModel<ORDER> {
 }
 
 /// Unigram, bigram and trigram baselines with per-window accumulators.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Baselines {
     uni: CountModel<0>,
     bi: CountModel<1>,
@@ -149,7 +149,7 @@ impl Baselines {
 }
 
 /// Counters the kernel bumps as it runs. Window fields reset at each report.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Stats {
     pub events: u64,
     pub bytes_total: u64,
@@ -311,7 +311,7 @@ impl Stats {
     }
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, serde::Deserialize, Debug, PartialEq)]
 pub struct Dist {
     pub mean: f64,
     pub p50: f64,
@@ -333,7 +333,7 @@ pub fn dist(xs: &mut [f64]) -> Option<Dist> {
     })
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, serde::Deserialize, Debug)]
 pub struct PopStats {
     pub n: usize,
     pub tau: Option<Dist>,
@@ -442,6 +442,7 @@ pub struct Metrics {
 }
 
 /// FNV-1a 64: tiny, dependency-free, stable across Rust versions.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Fnv(u64);
 
 impl Default for Fnv {
@@ -470,7 +471,10 @@ impl Fnv {
     }
 }
 
+/// Saved with the engine (`save::save`); the writer, wall clocks and written reports are not state.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Observatory {
+    #[serde(skip)]
     out: Option<Box<dyn Write>>,
     every: u64,
     next: u64,
@@ -478,12 +482,16 @@ pub struct Observatory {
     last_events: u64,
     reservoir: Vec<u32>,
     hash: Fnv,
+    #[serde(skip, default = "Instant::now")]
     last_wall: Instant,
+    #[serde(skip, default = "Instant::now")]
     start: Instant,
     pub reports: u64,
+    #[serde(skip)]
     pub last: Option<Metrics>,
     /// Probe ceiling at checkpoints (unhashed lines: observation only).
     pub prober: Option<crate::probe::Prober>,
+    #[serde(skip)]
     pub probes: Vec<crate::probe::ProbeReport>,
 }
 
@@ -518,6 +526,11 @@ impl Observatory {
             prober: None,
             probes: Vec::new(),
         }
+    }
+
+    /// Attach the metrics writer after a resume (the header was written by the first run).
+    pub fn set_out(&mut self, out: Option<Box<dyn Write>>) {
+        self.out = out;
     }
 
     /// Write a non-metrics line (header); hashed, so config differences show up in the hash.

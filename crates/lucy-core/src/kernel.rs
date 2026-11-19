@@ -45,7 +45,7 @@ fn prefetch_matrices(cells: &crate::store::CellStore, c: usize) {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Engine {
     pub p: Params,
     pub g: Graph,
@@ -54,10 +54,12 @@ pub struct Engine {
     pub stats: Stats,
     pub(crate) sched: Scheduler,
     /// Run phase A of each tick's fires on the rayon pool. Results are identical either way.
+    #[serde(skip)]
     pub parallel: bool,
     /// Structural plasticity bookkeeping (when and from where to replay the ring).
     pub plasticity: crate::plasticity::Plasticity,
     /// Decay factor tables derived from `p` (rebuild if `p` changes).
+    #[serde(skip)]
     decay: rules::Decay,
     /// Logical clock: time of the last processed event.
     pub now: u64,
@@ -99,8 +101,20 @@ impl Engine {
         self.decay.scalars(self.g.cells.scalars(c), dt, &self.p)
     }
 
-    /// Process events until the clock would reach `until` or nothing is pending.
+    /// Process events until the clock would reach `until` or nothing is pending, then write the
+    /// final partial report.
     pub fn run(
+        &mut self,
+        src: &mut dyn Iterator<Item = u8>,
+        until: u64,
+        obs: &mut Observatory,
+    ) -> io::Result<()> {
+        self.run_until(src, until, obs)?;
+        obs.finish(self)
+    }
+
+    /// `run` without the final report: stop here, save, and continue later bit-identically.
+    pub fn run_until(
         &mut self,
         src: &mut dyn Iterator<Item = u8>,
         until: u64,
@@ -113,7 +127,12 @@ impl Engine {
             obs.observe_until(self, t)?;
             self.step(src);
         }
-        obs.finish(self)
+        Ok(())
+    }
+
+    /// Rebuild state derived from `p` (not saved).
+    pub(crate) fn rebuild_derived(&mut self) {
+        self.decay = rules::Decay::new(&self.p);
     }
 
     /// Process one event. Returns false if the queue is empty.

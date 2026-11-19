@@ -3,7 +3,7 @@
 use crate::num::D;
 use crate::store::CellId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FireEvent {
     pub cell: CellId,
     pub t: u64,
@@ -17,7 +17,7 @@ pub struct FireEvent {
 pub const NO_PREV: u64 = u64::MAX;
 
 /// Fixed-capacity, overwrite-oldest ring addressed by a global, monotonic sequence number.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Ring {
     buf: Vec<FireEvent>,
     cap: usize,

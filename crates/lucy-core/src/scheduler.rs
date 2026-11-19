@@ -44,7 +44,7 @@ pub struct Event {
     pub payload: Payload,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Msg {
     dst: u32,
     edge: EdgeId,
@@ -53,7 +53,7 @@ struct Msg {
     wave: Wave,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 struct Bucket {
     sense: usize,
     deliver: Vec<Msg>,
@@ -79,7 +79,7 @@ impl Bucket {
 
 const WHEEL: usize = 64;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Scheduler {
     buckets: Vec<Bucket>,
     /// Lowest tick that may still hold events (the bucket being consumed).

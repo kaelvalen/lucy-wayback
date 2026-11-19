@@ -135,6 +135,16 @@ struct RunArgs {
     /// Add time-resolved and bigram-path probes and the path audit to each checkpoint.
     #[arg(long)]
     probe_paths: bool,
+    /// Save the whole run state here at the end (before the final partial report) and every
+    /// --save-every bytes; `--resume` continues it bit-identically.
+    #[arg(long)]
+    save: Option<PathBuf>,
+    #[arg(long, default_value_t = 0)]
+    save_every: u64,
+    /// Continue a saved run: graph flags, seed and --params come from the save; --ticks is the
+    /// absolute end; metrics are appended.
+    #[arg(long)]
+    resume: Option<PathBuf>,
 }
 
 struct Setup {
@@ -183,6 +193,10 @@ impl RunArgs {
         ensure!(
             self.probe_samples >= 1000,
             "--probe-samples must be >= 1000"
+        );
+        ensure!(
+            self.save_every == 0 || self.save.is_some(),
+            "--save-every needs --save"
         );
         if self.threads > 1 {
             // The global pool can only be built once per process; later calls are no-ops.
@@ -233,24 +247,35 @@ fn simulate(
     out: Option<Box<dyn Write>>,
     artifacts: Option<(PathBuf, bool, bool)>,
 ) -> Result<Outcome> {
-    let mut eng = seed::build(&s.cfg, s.p.clone());
-    eng.parallel = a.threads > 1;
-    if extra_cells > 0 {
-        seed::add_dormant(&mut eng, &s.cfg, extra_cells);
-    }
     let unigram = unigram_entropy_bits(&s.corpus);
-    let mut obs = Observatory::new(&eng, a.metrics_every, s.cfg.seed, out);
-    obs.header(&json!({
-        "kind": "header",
-        "corpus": a.corpus.display().to_string(),
-        "corpus_bytes": s.corpus.len(),
-        "unigram_entropy_bits": unigram,
-        "unigram_top1_accuracy": unigram_top1_accuracy(&s.corpus),
-        "ticks": a.ticks,
-        "extra_cells": extra_cells,
-        "seed_config": s.cfg,
-        "params": s.p,
-    }))?;
+    let (mut eng, mut obs) = match &a.resume {
+        Some(path) => {
+            let (eng, mut obs) = lucy_core::save::load(path)
+                .with_context(|| format!("loading {}", path.display()))?;
+            obs.set_out(out);
+            (eng, obs)
+        }
+        None => {
+            let mut eng = seed::build(&s.cfg, s.p.clone());
+            if extra_cells > 0 {
+                seed::add_dormant(&mut eng, &s.cfg, extra_cells);
+            }
+            let mut obs = Observatory::new(&eng, a.metrics_every, s.cfg.seed, out);
+            obs.header(&json!({
+                "kind": "header",
+                "corpus": a.corpus.display().to_string(),
+                "corpus_bytes": s.corpus.len(),
+                "unigram_entropy_bits": unigram,
+                "unigram_top1_accuracy": unigram_top1_accuracy(&s.corpus),
+                "ticks": a.ticks,
+                "extra_cells": extra_cells,
+                "seed_config": s.cfg,
+                "params": s.p,
+            }))?;
+            (eng, obs)
+        }
+    };
+    eng.parallel = a.threads > 1;
     if a.probe_every > 0 {
         let (dir, dump, snapshots) =
             artifacts.map_or((None, false, false), |(d, x, y)| (Some(d), x, y));
@@ -263,16 +288,56 @@ fn simulate(
             old: s.corpus[..a.probe_old.min(s.corpus.len())].to_vec(),
             paths: a.probe_paths,
         };
-        obs.prober = Some(Prober::new(cfg, s.corpus.clone(), s.cfg.ticks_per_byte));
+        let k = eng.senses.ticks_per_byte;
+        match &mut obs.prober {
+            Some(p) => p.reattach(cfg, s.corpus.clone()),
+            None => obs.prober = Some(Prober::new(cfg, s.corpus.clone(), k)),
+        }
     }
     let t0 = Instant::now();
-    eng.run(&mut s.corpus.iter().copied(), a.ticks, &mut obs)?;
+    // Bytes already consumed by a resumed run are skipped (one byte per arrival).
+    let mut src = s
+        .corpus
+        .iter()
+        .copied()
+        .skip(eng.stats.bytes_total as usize);
+    let step = a.save_every * eng.senses.ticks_per_byte;
+    // First save boundary after the next pending event, then every `step` ticks.
+    let mut mark = match step {
+        0 => a.ticks,
+        _ => (eng.next_time().unwrap_or(eng.now) / step + 1) * step,
+    };
+    loop {
+        let until = mark.min(a.ticks);
+        mark += step;
+        eng.run_until(&mut src, until, &mut obs)?;
+        if let Some(path) = &a.save {
+            lucy_core::save::save(path, &eng, &obs)
+                .with_context(|| format!("saving {}", path.display()))?;
+        }
+        if until >= a.ticks || eng.next_time().is_none() {
+            break;
+        }
+    }
+    obs.finish(&mut eng)?;
     Ok(Outcome {
         eng,
         obs,
         secs: t0.elapsed().as_secs_f64(),
         unigram,
     })
+}
+
+/// The metrics file: appended to when resuming (the first run wrote the header).
+fn metrics_out(path: &Path, a: &RunArgs) -> Result<Box<dyn Write>> {
+    if a.resume.is_none() {
+        return Ok(Box::new(create(path)?));
+    }
+    let f = fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .with_context(|| format!("appending to {}", path.display()))?;
+    Ok(Box::new(BufWriter::new(f)))
 }
 
 fn create(path: &Path) -> Result<BufWriter<File>> {
@@ -334,7 +399,7 @@ fn main() -> Result<()> {
             snapshot,
         } => {
             let s = a.setup()?;
-            let o = simulate(&a, &s, 0, Some(Box::new(create(&metrics)?)), None)?;
+            let o = simulate(&a, &s, 0, Some(metrics_out(&metrics, &a)?), None)?;
             summary(&o);
             println!(
                 "state hash {:016x}  metrics -> {}",
@@ -360,7 +425,7 @@ fn main() -> Result<()> {
                 .parent()
                 .filter(|d| !d.as_os_str().is_empty())
                 .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-            let w = Box::new(create(&metrics)?);
+            let w = metrics_out(&metrics, &a)?;
             let o = simulate(&a, &s, 0, Some(w), Some((dir, dump, snapshots)))?;
             summary(&o);
             println!(

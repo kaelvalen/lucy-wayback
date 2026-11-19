@@ -25,7 +25,7 @@ use crate::senses::N_BYTES;
 use crate::store::Kind;
 
 /// Consolidation state: where to replay from, and each input cell's tension (growth law).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Plasticity {
     /// First ring sequence number not yet replayed.
     pub next_seq: u64,

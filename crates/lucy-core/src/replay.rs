@@ -31,7 +31,7 @@ use crate::seed::{STREAM_DREAM, stream};
 use crate::store::Kind;
 
 /// A surprising byte arrival kept for replay.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Anchor {
     /// Competitive-readout surprise `-ln p(true byte)`.
     pub surprise: S,

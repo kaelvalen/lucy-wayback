@@ -9,6 +9,7 @@ pub mod plasticity;
 pub mod probe;
 pub mod replay;
 pub mod rules;
+pub mod save;
 pub mod scheduler;
 pub mod seed;
 pub mod senses;

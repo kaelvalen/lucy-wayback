@@ -260,7 +260,7 @@ pub fn decay_scalars(s: Scalars, dt: u64, p: &Params) -> Scalars {
 /// Fast path for [`decay_scalars`]: the same factors, read from per-timescale tables for short
 /// intervals (filled by the same `decay` function, so bit-identical) and computed once each.
 /// Built from `Params` at engine construction.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Decay {
     heat: Vec<S>,
     heat_input: Vec<S>,

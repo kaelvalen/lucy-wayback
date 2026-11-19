@@ -263,7 +263,7 @@ pub struct PathReport {
     pub bigram_fires_per_byte: f64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Audit {
     bytes: u64,
     in_edges: u64,
@@ -326,7 +326,7 @@ pub fn evaluate_segment(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProbeConfig {
     /// Checkpoint every this many bytes.
     pub every: u64,
@@ -392,8 +392,12 @@ pub fn old_segment_probe(eng: &Engine, old: &[u8]) -> Option<(f64, f64, f64)> {
 }
 
 /// Records windows during a run and probes at checkpoints. Reads the engine only.
+/// Saved with the engine minus `cfg` and `corpus`, which `reattach` restores from the command line.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Prober {
+    #[serde(skip)]
     cfg: ProbeConfig,
+    #[serde(skip)]
     corpus: Vec<u8>,
     k: u64,
     next: u64,
@@ -460,6 +464,12 @@ impl Prober {
 
     /// Called before the engine processes events at `t`: record the window of every byte that
     /// arrives at or before `t`; returns the reports of checkpoints completed on the way.
+    /// Restore what a save leaves out: the config and the corpus (from the command line).
+    pub fn reattach(&mut self, cfg: ProbeConfig, corpus: Vec<u8>) {
+        self.cfg = cfg;
+        self.corpus = corpus;
+    }
+
     pub fn observe_until(&mut self, eng: &Engine, t: u64) -> io::Result<Vec<ProbeReport>> {
         let mut out = Vec::new();
         while (self.next as usize) < self.corpus.len() && self.next * self.k <= t {

@@ -286,6 +286,25 @@ of every metrics line (minus wall clock) plus the full final state (cells, edges
 events). libm `exp`/`tanh` make runs bit-identical for the same binary on the same CPU
 architecture, so `rust-toolchain.toml` pins the compiler exactly (1.99.1) and `flake.nix` provides it.
 
+## Save/resume (`save.rs`)
+
+`--save PATH` writes the whole run state at the end of the run, and also every `--save-every`
+bytes if that is set: engine (cells, edges, scheduler wheel + overflow heap + per-tick arenas,
+ring, senses, plasticity incl. anchors, logical clock), observatory (window counters, calibrator,
+baselines, metrics hash) and the prober's windows. The format is bincode behind an 8-byte magic
+`LUCYSV01`, written to a temp file and then renamed. Nothing else needs saving: the decay tables are
+rebuilt from `Params`, and every RNG draw comes from `stream(seed, id)` at its point of use.
+`--resume PATH --ticks <absolute end>` continues the run: graph flags, seed and params come from
+the save, the corpus skips the `bytes_total` bytes already consumed, and metrics are appended.
+The save point comes before the final partial report, so the resumed metrics lines match an
+uninterrupted run's. The interrupted file additionally has one partial line at the cut.
+- Test `save_resume_is_bit_identical`: N ticks → save → load → M ticks equals N + M ticks,
+  with plasticity and wayback on. Both the state hash and the metrics hash must match.
+- CHILDES, 4096 cells: a run to 400 k ticks and a run cut at 160 k (saving every 7 000 bytes) then
+  resumed give the same state hash `a787ae53737c02a7`.
+- A save is ≈ 123 MB at 4096 cells, mostly W/Q and the ring.
+- For the 68 MB run: `--save runs/d.bin --save-every 2000000`.
+
 ## Scaling
 
 `lucy bench-scaling` builds the same seed graph, adds (k−1)×N dormant hidden cells wired only
@@ -704,11 +723,7 @@ well below its 2.6 M events/s alone. No save/resume exists yet, so it cannot be 
 
 ## Next (queued)
 
-0. **Full save/resume.** Write the whole engine state to disk and continue bit-identically: cells,
-   edges, scheduler (wheel, overflow heap, per-tick state arena), ring, senses, plasticity (incl.
-   anchors and tension state), RNG streams, logical clock and observatory counters. Test: run N
-   ticks → save → load → run M ticks must give the same state hash as N + M ticks
-   uninterrupted. Long runs save automatically at each 2 MB checkpoint.
+0. ~~Full save/resume~~ done (`save.rs`, see Save/resume). Next steps follow `docs/PROPOSAL-v2.md`.
 1. Wiring for the bigram path: growth currently picks only 3 % bigram-path in-edges. Next to
    try is ranking candidates by lift instead of excess. Goal: routing > bigram (41.2 %).
 2. C's routing collapse (and C + B's local runaways): open, see above.
