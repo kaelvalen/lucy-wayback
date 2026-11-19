@@ -97,6 +97,9 @@ pub struct Params {
     pub ctx_t_v: f64,
     /// Context cells: a leaf whose decayed count falls below this is pruned in sleep.
     pub ctx_prune_floor: f64,
+    /// Context cells: in sleep, fold a leaf into its parent when it saves fewer bits than this
+    /// over the parent (vitality · KL); 0 = never fold.
+    pub ctx_fold_bits: f64,
     /// Context cells: slots each sleep pass visits (fixed, so pruning is O(1) per byte).
     pub ctx_sweep: u32,
     /// Context cells: most live cells (0 = unlimited); at the budget, misses grow nothing.
@@ -152,8 +155,9 @@ impl Default for Params {
             tissue: Tissue::Context,
             ctx_depth: 8,
             ctx_grow_min: 2.0,
-            ctx_t_v: 1e6,
+            ctx_t_v: 1e7,
             ctx_prune_floor: 0.5,
+            ctx_fold_bits: 0.0,
             ctx_sweep: 4096,
             ctx_budget: 1 << 21,
         }
@@ -249,6 +253,7 @@ impl Params {
             ("ctx_grow_min", self.ctx_grow_min),
             ("ctx_t_v", self.ctx_t_v),
             ("ctx_prune_floor", self.ctx_prune_floor),
+            ("ctx_fold_bits", self.ctx_fold_bits),
         ] {
             if !(x.is_finite() && x >= 0.0) {
                 return Err(format!("{name} must be finite and >= 0, got {x}"));

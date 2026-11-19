@@ -306,7 +306,7 @@ into the past. Each cell keeps `parent, depth, last_t, total`, plus `children` a
    one child one byte deeper. Under the budget `ctx_budget` (2 M cells) the miss grows nothing
    and is counted in `context_starved`.
 5. **DECAY.** Counts decay lazily as `exp(−dt/ctx_t_v)`, with dt in bytes, applied when a cell is
-   touched (`ctx_t_v` = 1e6; 0 turns decay off).
+   touched (`ctx_t_v` = 1e7; 0 turns decay off). The growth gate counts undecayed visits.
    - Every `consolidate_every` bytes, sleep visits the next `ctx_sweep` (4096) slots and prunes
      leaves whose vitality is below `ctx_prune_floor` (0.5). Freed slots are reused first.
    - The sweep size is fixed, so pruning costs O(1) per byte at any cell count.
@@ -318,6 +318,34 @@ one Arrive event. The Phase 1 path is `--tissue reservoir` (or `"tissue": "reser
 400 k-tick CHILDES run match. The state hash differs only because it now covers the (empty)
 context tissue. `lucy probe` and `bench-scaling` measure the reservoir and refuse to run without
 `--tissue reservoir`. W/Q cells are meant to return as the encoder for continuous senses.
+
+**Sleep is structural only (step 3).** Sleep never adds evidence: replaying misses as extra
+counts made the prototype worse (PROPOSAL-v2, negative result 1). It visits `ctx_sweep` slots per
+pass and removes leaves in two ways:
+- **prune**: vitality (decayed count) below `ctx_prune_floor`;
+- **fold** (`ctx_fold_bits` > 0, off by default): the leaf saves fewer bits over its parent
+  than the threshold, measured as vitality · KL(p_leaf ‖ p_parent). Its counts are already in
+  the parent, because every chain cell counts every byte, so folding loses only that.
+
+Fold, CHILDES 1 MB (default decay 1e7, 900 k–1 M window):
+
+| `ctx_fold_bits` | top-1 | bits | cells | folded |
+|---|---|---|---|---|
+| 0 (off) | 70.6 % | 1.504 | 150 365 | 0 |
+| 0.25 | 70.4 % | 1.508 | 147 446 | 8 326 |
+| 0.5 | 70.4 % | 1.511 | 143 727 | 15 647 |
+| 1 | 70.0 % | 1.526 | 102 338 | 80 213 |
+| 2 | 69.3 % | 1.575 | 60 568 | 161 003 |
+
+- **Fold does not pass "same or better accuracy with fewer cells"** at any threshold. It is
+  a cells-for-accuracy trade, so it stays off.
+- A prequential variant was worse and was not kept. It credited each leaf with the bits it
+  actually saved over its parent while it was the deepest cell, then folded leaves with negative
+  net credit. Folding only leaves below −2 bits cost −0.5 points for −3 % cells.
+- The reason: cells only grow where Lucy was wrong, and a folded cell regrows at count 1 on the
+  next miss, losing its evidence.
+- **Pruning by decay does pass the test**: `ctx_t_v` 1e6 gives 70.5 % / 1.505 bits with
+  143 701 cells, against 150 743 cells with no decay at the same 70.5 %.
 
 **Exact port first (`a3b0897`).** Successors kept in first-seen order reproduce
 `scripts/context_cells_reference.py` on CHILDES 1 MB at every 100 k checkpoint: identical cell
@@ -770,8 +798,9 @@ Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 bes
 | 1a exact port | `a3b0897` | 70.5 % | 1.517 | 152 039 | — | identical at every checkpoint |
 | 1b native, no decay | `277995d` | 70.5 % | 1.504 | 150 743 | — | sorted lists, lowest-byte ties |
 | 1b native, default (t_v 1e6, budget 2 M) | `277995d` | 70.3 % | 1.516 | 117 278 | ≈ 8 000–16 000 | still spikes into a 32-cell reservoir, which dominates the time |
-| 2 reservoir off the byte path | (2) | 70.3 % | 1.516 | 117 278 | ≈ 5 300–10 900 (whole run); 1 650 (tissue alone) | 1 MB in 8.2 s; the observatory's calibrator (2.4 µs) and 256 logits (1 µs) cost more than the tissue |
+| 2 reservoir off the byte path | `7dc2a99` | 70.3 % | 1.516 | 117 278 | ≈ 5 300–10 900 (whole run); 1 650 (tissue alone) | 1 MB in 8.2 s; the observatory's calibrator (2.4 µs) and 256 logits (1 µs) cost more than the tissue |
 | fix: growth gate on visits | `4303646` | 70.5 % | 1.505 | 143 701 | | decayed totals made any decay need a 3rd visit before growth (−0.2 to −0.4 points) |
+| 3 structural sleep (prune + fold, fold off; t_v 1e7) | (3) | 70.6 % | 1.504 | 150 365 | ≈ 2 700–3 250 (whole run, solo) | fold never wins (see Sleep); 1 MB in 3.1 s solo |
 
 Decay timescale at 1 MB (no budget): `ctx_t_v` 3e5 → 69.9 % / 1.534 bits, 81 649 cells; 1e5 →
 68.6 % / 1.611, 42 478 cells. A budget of 65 536 cells costs 0.1–0.4 points at 1 MB

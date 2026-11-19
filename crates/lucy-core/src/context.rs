@@ -112,6 +112,7 @@ pub struct Context {
     /// Cells grown and pruned since the start; growths refused by the budget.
     pub grown: u64,
     pub pruned: u64,
+    pub folded: u64,
     pub starved: u64,
     #[serde(skip)]
     chain: Vec<u32>,
@@ -132,6 +133,7 @@ impl Default for Context {
             cursor: 1,
             grown: 0,
             pruned: 0,
+            folded: 0,
             starved: 0,
             chain: Vec::new(),
             score: vec![0.0; N_BYTES],
@@ -251,14 +253,15 @@ impl Context {
         self.grown += 1;
     }
 
-    /// Sleep: visit the next `ctx_sweep` slots and prune leaves whose vitality is below the
-    /// floor (a non-leaf waits until its children are gone). Returns cells pruned.
+    /// Sleep (structural only, it never adds evidence): visit the next `ctx_sweep` slots; a leaf
+    /// dies if its vitality is below the floor, or folds into its parent if it saves fewer than
+    /// `ctx_fold_bits` (a non-leaf waits until its children are gone). Returns cells removed.
     pub fn sleep(&mut self, p: &Params) -> u64 {
         let n = self.cells.len() as u32;
-        if n <= 1 || p.ctx_t_v <= 0.0 {
-            return 0; // without decay nothing ever loses vitality
+        if n <= 1 {
+            return 0;
         }
-        let mut pruned = 0;
+        let mut removed = 0;
         for _ in 0..p.ctx_sweep.min(n - 1) {
             let c = self.cursor as usize;
             self.cursor = if self.cursor + 1 >= n {
@@ -267,10 +270,15 @@ impl Context {
                 self.cursor + 1
             };
             let cell = &self.cells[c];
-            if cell.depth == DEAD
-                || !cell.children.is_empty()
-                || cell.vitality(self.now, p.ctx_t_v) >= p.ctx_prune_floor
-            {
+            if cell.depth == DEAD || !cell.children.is_empty() {
+                continue;
+            }
+            let vitality = cell.vitality(self.now, p.ctx_t_v);
+            if vitality < p.ctx_prune_floor {
+                self.pruned += 1;
+            } else if p.ctx_fold_bits > 0.0 && self.fold_gain(c, vitality) < p.ctx_fold_bits {
+                self.folded += 1;
+            } else {
                 continue;
             }
             let parent = cell.parent as usize;
@@ -282,10 +290,35 @@ impl Context {
             };
             self.free.push(c as u32);
             self.live -= 1;
-            pruned += 1;
+            removed += 1;
         }
-        self.pruned += pruned;
-        pruned
+        removed
+    }
+
+    /// Bits a leaf saves over its parent on the evidence it holds (MDL): vitality times
+    /// KL(p_cell || p_parent). Its counts are already in the parent (every chain cell counts
+    /// every byte), so folding it loses only this. Ratios n/T do not depend on decay.
+    fn fold_gain(&self, c: usize, vitality: f64) -> f64 {
+        let (cell, parent) = (&self.cells[c], &self.cells[self.cells[c].parent as usize]);
+        let kl: f64 = cell
+            .succ
+            .iter()
+            .filter(|&&(_, v)| v > 0.0)
+            .map(|&(b, v)| {
+                // The parent holds every count its child holds; if not, never fold.
+                let q = parent
+                    .succ
+                    .binary_search_by_key(&b, |&(x, _)| x)
+                    .map_or(0.0, |i| parent.succ[i].1);
+                let pc = v / cell.total;
+                if q > 0.0 {
+                    pc * (pc / (q / parent.total)).log2()
+                } else {
+                    f64::INFINITY
+                }
+            })
+            .sum();
+        vitality * kl
     }
 
     /// Feed the state hash (determinism check).
@@ -372,6 +405,33 @@ mod tests {
         let slots = ctx.cells.len();
         feed(&mut ctx, &p, &b"xyzw".repeat(20));
         assert!(ctx.cells.len() <= slots, "freed slots are reused first");
+    }
+
+    #[test]
+    fn fold_removes_only_leaves_that_add_nothing() {
+        let leaf = |parent, succ: Vec<(u8, f64)>| Cell {
+            parent,
+            depth: 1,
+            total: succ.iter().map(|x| x.1).sum(),
+            succ,
+            ..Cell::default()
+        };
+        let mut ctx = Context::default();
+        ctx.cells[0] = leaf(0, vec![(b'a', 10.0), (b'b', 10.0)]);
+        ctx.cells[0].depth = 0;
+        ctx.cells[0].children = vec![(b'x', 1), (b'y', 2)];
+        ctx.cells.push(leaf(0, vec![(b'a', 5.0), (b'b', 5.0)])); // same as the parent: KL 0
+        ctx.cells.push(leaf(0, vec![(b'a', 5.0)])); // 5 x log2(1 / 0.5) = 5 bits
+        ctx.live = 3;
+        let p = Params {
+            ctx_fold_bits: 1.0,
+            ctx_t_v: 0.0,
+            ..Params::default()
+        };
+        assert_eq!(ctx.sleep(&p), 1);
+        assert_eq!(ctx.folded, 1);
+        assert_eq!(ctx.cells[0].children, vec![(b'y', 2)]);
+        assert_eq!(ctx.cells[1].depth, DEAD);
     }
 
     #[test]
