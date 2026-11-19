@@ -504,6 +504,10 @@ impl Engine {
     /// Context-cell arrival: vote -> distribution over the 256-byte sheet -> learn on the chain
     /// -> grow at the deepest miss. The byte's input cell still spikes into the reservoir.
     fn arrive_context(&mut self, t: u64, b: usize) {
+        let every = u64::from(self.p.consolidate_every);
+        if every > 0 && self.stats.bytes_total > 0 && self.stats.bytes_total.is_multiple_of(every) {
+            self.ctx.sleep(&self.p);
+        }
         let mut probs = std::mem::take(&mut self.senses.probs);
         let guess = self.ctx.arrive(b as u8, &self.p, &mut probs);
         // Logits whose softmax is exactly `probs` (all > 0: EPS mass is uniform).

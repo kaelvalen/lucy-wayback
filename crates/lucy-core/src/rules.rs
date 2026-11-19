@@ -93,6 +93,14 @@ pub struct Params {
     pub ctx_depth: u32,
     /// Context cells: evidence (count) the deepest cell needs before a miss grows a child.
     pub ctx_grow_min: f64,
+    /// Context cells: decay timescale of successor counts, in bytes (0 = never decay).
+    pub ctx_t_v: f64,
+    /// Context cells: a leaf whose decayed count falls below this is pruned in sleep.
+    pub ctx_prune_floor: f64,
+    /// Context cells: slots each sleep pass visits (fixed, so pruning is O(1) per byte).
+    pub ctx_sweep: u32,
+    /// Context cells: most live cells (0 = unlimited); at the budget, misses grow nothing.
+    pub ctx_budget: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +152,10 @@ impl Default for Params {
             tissue: Tissue::Context,
             ctx_depth: 8,
             ctx_grow_min: 2.0,
+            ctx_t_v: 1e6,
+            ctx_prune_floor: 0.5,
+            ctx_sweep: 4096,
+            ctx_budget: 1 << 21,
         }
     }
 }
@@ -229,6 +241,18 @@ impl Params {
                 "alpha_tau must be in (0, 1], got {}",
                 self.alpha_tau
             ));
+        }
+        if self.ctx_depth == 0 {
+            return Err("ctx_depth must be >= 1".into());
+        }
+        for (name, x) in [
+            ("ctx_grow_min", self.ctx_grow_min),
+            ("ctx_t_v", self.ctx_t_v),
+            ("ctx_prune_floor", self.ctx_prune_floor),
+        ] {
+            if !(x.is_finite() && x >= 0.0) {
+                return Err(format!("{name} must be finite and >= 0, got {x}"));
+            }
         }
         Ok(())
     }

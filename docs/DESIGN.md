@@ -286,6 +286,37 @@ of every metrics line (minus wall clock) plus the full final state (cells, edges
 events). libm `exp`/`tanh` make runs bit-identical for the same binary on the same CPU
 architecture, so `rust-toolchain.toml` pins the compiler exactly (1.99.1) and `flake.nix` provides it.
 
+## Context cells (`context.rs`, v2 byte-stream tissue; `tissue = "context"`, default)
+
+From `docs/PROPOSAL-v2.md`: a cell's identity is its context. Cells form a suffix trie. The root
+is the empty context, and the child of a cell for byte y extends its context one byte further
+into the past. Each cell keeps `parent, depth, last_t, total`, plus `children` and `succ`
+(successor counts), both as small lists sorted by byte. At each arrival of byte x:
+1. **SPREAD.** Walk the chain from the root through `children`, keyed by the newest history
+   byte, then the next older one, and so on. This gives every live suffix of the last
+   `ctx_depth` (K = 8) bytes: ≤ K + 1 cells, no hashing of history, O(K) per byte.
+   - Forward spread (c → c + x) is *not* used. It cannot reach a cell whose context minus its
+     newest byte has no cell, so its chain would differ from the reference's.
+2. **TRACE.** The chain votes, each cell with weight `w = T/(T+2) · 2^depth / T` on its decayed
+   counts. Then `p = (score/Z)(1 − ε) + ε/256` with ε = 1e-3, written to the 256-byte readout
+   sheet. The logits passed to the observatory are `ln p`, so `readout_bits` is exactly the
+   reference's bits.
+3. **Learn.** Every chain cell counts x.
+4. **TENSION.** If the deepest cell mispredicted and has ≥ `ctx_grow_min` (2) evidence, it grows
+   one child one byte deeper. Under the budget `ctx_budget` (2 M cells) the miss grows nothing
+   and is counted in `context_starved`.
+5. **DECAY.** Counts decay lazily as `exp(−dt/ctx_t_v)`, with dt in bytes, applied when a cell is
+   touched (`ctx_t_v` = 1e6; 0 turns decay off).
+   - Every `consolidate_every` bytes, sleep visits the next `ctx_sweep` (4096) slots and prunes
+     leaves whose vitality is below `ctx_prune_floor` (0.5). Freed slots are reused first.
+   - The sweep size is fixed, so pruning costs O(1) per byte at any cell count.
+
+**Exact port first (`a3b0897`).** Successors kept in first-seen order reproduce
+`scripts/context_cells_reference.py` on CHILDES 1 MB at every 100 k checkpoint: identical cell
+counts (27 468 … 152 039), and top-1 and bits equal to every printed digit (70.5 % / 1.517 bits
+at 1 MB). The native version sorts lists by byte, so ties go to the lowest byte; with decay off
+it gives 70.5 % / 1.504 bits.
+
 ## Save/resume (`save.rs`)
 
 `--save PATH` writes the whole run state at the end of the run, and also every `--save-every`
@@ -720,6 +751,21 @@ well below its 2.6 M events/s alone. No save/resume exists yet, so it cannot be 
   - in-degree of input cells creeps 5.4 → 5.8.
 - **Without W learning and with the old readout, more data buys nothing:** the tissue is a fixed
   random reservoir, and the routing plateau is the readout's and the wiring's.
+
+### v2: context cells, CHILDES 1 MB (`childes-1mb.txt`), prequential, last 100 k window
+
+Online uni/bi/trigram on the same window: 21.0 / 41.3 / 57.3 %. Lucy Phase 1 best: 38.5 % / 3.42 bits.
+
+| step | commit | top-1 | bits/byte | cells | ns/byte | notes |
+|---|---|---|---|---|---|---|
+| reference (Python) | `5640ea1` | 70.5 % | 1.517 | 152 039 | ≈ 36 000 | `context_cells_reference.py` |
+| 1a exact port | `a3b0897` | 70.5 % | 1.517 | 152 039 | — | identical at every checkpoint |
+| 1b native, no decay | (1b) | 70.5 % | 1.504 | 150 743 | — | sorted lists, lowest-byte ties |
+| 1b native, default (t_v 1e6, budget 2 M) | (1b) | 70.3 % | 1.516 | 117 278 | ≈ 8 000–16 000 | still spikes into a 32-cell reservoir, which dominates the time |
+
+Decay timescale at 1 MB (no budget): `ctx_t_v` 3e5 → 69.9 % / 1.534 bits, 81 649 cells; 1e5 →
+68.6 % / 1.611, 42 478 cells. A budget of 65 536 cells costs 0.1–0.4 points at 1 MB
+(70.2 % with decay, 70.1 % without).
 
 ## Next (queued)
 

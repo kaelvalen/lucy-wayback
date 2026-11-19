@@ -9,10 +9,14 @@
 //! - TRACE: each cell counts what followed it; the prediction is the confidence-weighted vote
 //!   of the chain, `w = T/(T+2) · 2^depth / T`.
 //! - TENSION/GROWTH: when the deepest active cell mispredicts and has ≥ `ctx_grow_min` evidence,
-//!   it grows one child one byte deeper. Cells only grow where Lucy is wrong.
+//!   it grows one child one byte deeper. Cells only grow where Lucy is wrong, and only while the
+//!   tissue is under its cell budget (metabolism).
+//! - DECAY: counts are earned vitality and decay lazily (`exp(-dt / ctx_t_v)`, dt in bytes, applied
+//!   when a cell is touched). Sleep sweeps a fixed number of cells per pass and prunes leaves whose
+//!   vitality fell below `ctx_prune_floor`, so pruning costs O(1) per byte too.
 //!
-//! This is an exact port of `scripts/context_cells_reference.py`: successor lists keep first-seen
-//! order, so ties break exactly as Python's dict / `Counter.most_common` do.
+//! With `ctx_t_v = 0` (no decay) this is `scripts/context_cells_reference.py` up to tie-breaks:
+//! successor and child lists are sorted by byte, and ties go to the lowest byte.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,19 +28,26 @@ use crate::senses::N_BYTES;
 const COLD_GUESS: u8 = b' ';
 /// Share of probability mass spread uniformly, so no byte ever costs infinite bits.
 const EPS: f64 = 1e-3;
+/// Marks a free slot.
+const DEAD: u32 = u32::MAX;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Cell {
+    /// Shorter context (one byte less in the past); unused for the root.
+    parent: u32,
     depth: u32,
-    /// Byte one step further into the past -> child cell.
-    children: Vec<(u8, u32)>,
-    /// What followed this context (first-seen order) and how often.
-    succ: Vec<(u8, f64)>,
+    /// Byte count at the last decay.
+    last_t: u64,
+    /// Sum of `succ` counts.
     total: f64,
+    /// Byte one step further into the past -> child cell, sorted by byte.
+    children: Vec<(u8, u32)>,
+    /// What followed this context and how often (decayed), sorted by byte.
+    succ: Vec<(u8, f64)>,
 }
 
 impl Cell {
-    /// Most frequent successor; the first seen wins ties (`Counter.most_common(1)`).
+    /// Most frequent successor; the lowest byte wins ties.
     fn best(&self) -> Option<u8> {
         let mut best: Option<(u8, f64)> = None;
         for &(b, v) in &self.succ {
@@ -49,27 +60,56 @@ impl Cell {
 
     fn child(&self, y: u8) -> Option<u32> {
         self.children
-            .iter()
-            .find(|&&(b, _)| b == y)
-            .map(|&(_, c)| c)
+            .binary_search_by_key(&y, |&(b, _)| b)
+            .ok()
+            .map(|i| self.children[i].1)
     }
 
     fn count(&mut self, x: u8) {
-        match self.succ.iter_mut().find(|(b, _)| *b == x) {
-            Some((_, v)) => *v += 1.0,
-            None => self.succ.push((x, 1.0)),
+        match self.succ.binary_search_by_key(&x, |&(b, _)| b) {
+            Ok(i) => self.succ[i].1 += 1.0,
+            Err(i) => self.succ.insert(i, (x, 1.0)),
         }
         self.total += 1.0;
+    }
+
+    /// Bring the counts to byte time `now`.
+    fn decay(&mut self, now: u64, t_v: f64) {
+        let dt = now - self.last_t;
+        self.last_t = now;
+        if t_v > 0.0 && dt > 0 {
+            let f = (-(dt as f64) / t_v).exp();
+            for (_, v) in &mut self.succ {
+                *v *= f;
+            }
+            self.total *= f;
+        }
+    }
+
+    /// Vitality at `now` without touching the cell.
+    fn vitality(&self, now: u64, t_v: f64) -> f64 {
+        match t_v > 0.0 {
+            true => self.total * (-((now - self.last_t) as f64) / t_v).exp(),
+            false => self.total,
+        }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Context {
     cells: Vec<Cell>,
+    free: Vec<u32>,
+    live: usize,
     /// The last `ctx_depth` bytes, oldest first.
     hist: Vec<u8>,
-    /// Cells grown since the start.
+    /// Bytes seen (the decay clock).
+    now: u64,
+    /// Next slot the sleep sweep visits.
+    cursor: u32,
+    /// Cells grown and pruned since the start; growths refused by the budget.
     pub grown: u64,
+    pub pruned: u64,
+    pub starved: u64,
     #[serde(skip)]
     chain: Vec<u32>,
     #[serde(skip)]
@@ -82,8 +122,14 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             cells: vec![Cell::default()],
+            free: Vec::new(),
+            live: 1,
             hist: Vec::new(),
+            now: 0,
+            cursor: 1,
             grown: 0,
+            pruned: 0,
+            starved: 0,
             chain: Vec::new(),
             score: vec![0.0; N_BYTES],
             order: Vec::new(),
@@ -92,14 +138,16 @@ impl Default for Context {
 }
 
 impl Context {
+    /// Live cells, root included.
     pub fn cells(&self) -> usize {
-        self.cells.len()
+        self.live
     }
 
     /// Byte `x` arrives: fill `probs` with the prediction made before seeing it, learn, grow.
     /// Returns the top-1 guess.
     pub fn arrive(&mut self, x: u8, p: &Params, probs: &mut [S]) -> u8 {
         self.score.resize(N_BYTES, 0.0);
+        let t_v = p.ctx_t_v;
         // SPREAD: the chain of existing suffixes of the history, shortest first.
         self.chain.clear();
         self.chain.push(0);
@@ -113,13 +161,14 @@ impl Context {
                 None => break,
             }
         }
-        // TRACE: confidence-weighted vote, accumulated in first-touch order.
+        // TRACE: confidence-weighted vote of the (decayed) chain.
         for &b in &self.order {
             self.score[b as usize] = 0.0;
         }
         self.order.clear();
         for &ci in &self.chain {
-            let cell = &self.cells[ci as usize];
+            let cell = &mut self.cells[ci as usize];
+            cell.decay(self.now, t_v);
             let t = cell.total;
             if t <= 0.0 {
                 continue;
@@ -138,7 +187,7 @@ impl Context {
         let mut top = f64::NEG_INFINITY;
         for &b in &self.order {
             let s = self.score[b as usize];
-            if s > top {
+            if s > top || (s == top && b < guess) {
                 (top, guess) = (s, b);
             }
             z += s;
@@ -157,28 +206,90 @@ impl Context {
         if deep_guess != Some(x) && d < self.hist.len() && self.cells[deep].total >= p.ctx_grow_min
         {
             let y = self.hist[self.hist.len() - 1 - d];
-            let id = u32::try_from(self.cells.len()).expect("context cells exceed u32 ids");
-            let mut child = Cell {
-                depth: d as u32 + 1,
-                ..Cell::default()
-            };
-            child.count(x);
-            self.cells.push(child);
-            self.cells[deep].children.push((y, id));
-            self.grown += 1;
+            self.grow(deep, y, x, p);
         }
         self.hist.push(x);
         if self.hist.len() > p.ctx_depth as usize {
             self.hist.remove(0);
         }
+        self.now += 1;
         guess
     }
 
+    fn grow(&mut self, parent: usize, y: u8, x: u8, p: &Params) {
+        if p.ctx_budget > 0 && self.live >= p.ctx_budget as usize {
+            self.starved += 1;
+            return;
+        }
+        let mut cell = Cell {
+            parent: parent as u32,
+            depth: self.cells[parent].depth + 1,
+            last_t: self.now,
+            ..Cell::default()
+        };
+        cell.count(x);
+        let id = match self.free.pop() {
+            Some(id) => {
+                self.cells[id as usize] = cell;
+                id
+            }
+            None => {
+                let id = u32::try_from(self.cells.len()).expect("context cells exceed u32 ids");
+                self.cells.push(cell);
+                id
+            }
+        };
+        let ch = &mut self.cells[parent].children;
+        let i = ch.binary_search_by_key(&y, |&(b, _)| b).unwrap_err();
+        ch.insert(i, (y, id));
+        self.live += 1;
+        self.grown += 1;
+    }
+
+    /// Sleep: visit the next `ctx_sweep` slots and prune leaves whose vitality is below the
+    /// floor (a non-leaf waits until its children are gone). Returns cells pruned.
+    pub fn sleep(&mut self, p: &Params) -> u64 {
+        let n = self.cells.len() as u32;
+        if n <= 1 || p.ctx_t_v <= 0.0 {
+            return 0; // without decay nothing ever loses vitality
+        }
+        let mut pruned = 0;
+        for _ in 0..p.ctx_sweep.min(n - 1) {
+            let c = self.cursor as usize;
+            self.cursor = if self.cursor + 1 >= n {
+                1
+            } else {
+                self.cursor + 1
+            };
+            let cell = &self.cells[c];
+            if cell.depth == DEAD
+                || !cell.children.is_empty()
+                || cell.vitality(self.now, p.ctx_t_v) >= p.ctx_prune_floor
+            {
+                continue;
+            }
+            let parent = cell.parent as usize;
+            let ch = &mut self.cells[parent].children;
+            ch.retain(|&(_, id)| id as usize != c);
+            self.cells[c] = Cell {
+                depth: DEAD,
+                ..Cell::default()
+            };
+            self.free.push(c as u32);
+            self.live -= 1;
+            pruned += 1;
+        }
+        self.pruned += pruned;
+        pruned
+    }
+
     /// Feed the state hash (determinism check).
-    pub fn hash(&self, h: &mut crate::observe::Fnv) {
+    pub fn feed_hash(&self, h: &mut crate::observe::Fnv) {
         h.u64(self.cells.len() as u64);
         for c in &self.cells {
-            h.u64(c.depth as u64);
+            h.u64(((c.parent as u64) << 32) | c.depth as u64);
+            h.u64(c.last_t);
+            h.u64(c.total.to_bits());
             for &(b, ch) in &c.children {
                 h.u64(((b as u64) << 32) | ch as u64);
             }
@@ -187,7 +298,12 @@ impl Context {
                 h.u64(v.to_bits());
             }
         }
+        for &f in &self.free {
+            h.u64(f as u64);
+        }
         h.bytes(&self.hist);
+        h.u64(self.now);
+        h.u64(self.cursor as u64);
     }
 }
 
@@ -195,7 +311,13 @@ impl Context {
 mod tests {
     use super::*;
 
-    /// The reference script's numbers on a hand-checkable stream.
+    fn feed(ctx: &mut Context, p: &Params, s: &[u8]) -> usize {
+        let mut probs = vec![0.0; N_BYTES];
+        s.iter()
+            .filter(|&&x| ctx.arrive(x, p, &mut probs) == x)
+            .count()
+    }
+
     #[test]
     fn learns_a_cycle_and_grows_only_on_misses() {
         let p = Params::default();
@@ -214,9 +336,51 @@ mod tests {
         // After one cycle, order-1 contexts predict perfectly; growth stops when nothing misses.
         assert!(right >= stream.len() - 5, "right {right}");
         let cells = ctx.cells();
-        for &x in b"abcabc" {
-            assert_eq!(ctx.arrive(x, &p, &mut probs), x);
-        }
+        assert_eq!(feed(&mut ctx, &p, b"abcabc"), 6);
         assert_eq!(ctx.cells(), cells);
+    }
+
+    #[test]
+    fn unvisited_contexts_die_and_slots_are_reused() {
+        let p = Params {
+            ctx_t_v: 50.0,
+            ctx_sweep: 1 << 20,
+            ..Params::default()
+        };
+        let mut ctx = Context::default();
+        feed(&mut ctx, &p, &b"xyzw".repeat(20));
+        let grown = ctx.grown;
+        assert!(grown > 0);
+        // A long stretch of another pattern: the old contexts fade below the floor.
+        feed(&mut ctx, &p, &b"ab".repeat(300));
+        ctx.sleep(&p);
+        assert!(ctx.pruned > 0);
+        assert_eq!(ctx.live, 1 + ctx.grown as usize - ctx.pruned as usize);
+        // Every child link points at a live cell whose parent is the linking cell.
+        for (i, c) in ctx.cells.iter().enumerate() {
+            for &(_, ch) in &c.children {
+                assert_ne!(ctx.cells[ch as usize].depth, DEAD);
+                assert_eq!(ctx.cells[ch as usize].parent as usize, i);
+            }
+        }
+        let slots = ctx.cells.len();
+        feed(&mut ctx, &p, &b"xyzw".repeat(20));
+        assert!(ctx.cells.len() <= slots, "freed slots are reused first");
+    }
+
+    #[test]
+    fn budget_stops_growth() {
+        let p = Params {
+            ctx_budget: 5,
+            ..Params::default()
+        };
+        let mut ctx = Context::default();
+        feed(
+            &mut ctx,
+            &p,
+            b"the cat sat on the mat and the dog sat on the log",
+        );
+        assert_eq!(ctx.cells(), 5);
+        assert!(ctx.starved > 0);
     }
 }
