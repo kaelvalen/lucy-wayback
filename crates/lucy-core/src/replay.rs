@@ -543,7 +543,7 @@ mod tests {
         let p = Params {
             replay_per_pass: 4,
             dreams_per_pass: 0,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let mut g = Graph::default();
         let mut w = ZERO_M;
@@ -627,7 +627,7 @@ mod tests {
             consolidate_every: 200,
             replay_per_pass: 16,
             eta_w: 0.0,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let e = run(p, &text, 8 * 1500);
         let n = e.stats.replay_state_n;
@@ -642,7 +642,7 @@ mod tests {
         let text = b"the cat sat on the mat. ".repeat(80);
         let base = Params {
             consolidate_every: 200,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let on = Params {
             replay_per_pass: 16,

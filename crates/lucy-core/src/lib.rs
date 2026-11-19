@@ -2,6 +2,7 @@
 //! Cost scales with cells that fire, never with total graph size (all decay is lazy).
 
 pub mod buffer;
+pub mod context;
 pub mod kernel;
 pub mod num;
 pub mod observe;

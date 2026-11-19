@@ -368,7 +368,7 @@ mod tests {
     fn disabled_by_zero_period() {
         let mut eng = engine(Params {
             consolidate_every: 0,
-            ..Params::default()
+            ..Params::reservoir()
         });
         let edges = eng.g.edges.slots.live();
         run_bytes(&mut eng, &b"abcab".repeat(400), 12_000);
@@ -384,7 +384,7 @@ mod tests {
             consolidate_every: 200,
             grow_per_tension: 10.0,
             input_in_cap: 18,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let cap = p.input_in_cap as usize;
         let mut eng = engine(p);
@@ -414,7 +414,7 @@ mod tests {
             consolidate_every: 200,
             hidden_grow_per_pass: 50,
             hidden_in_cap: 12,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let cap = p.hidden_in_cap as usize;
         let mut eng = engine(p);
@@ -454,7 +454,7 @@ mod tests {
         let p = Params {
             consolidate_every: 150,
             hidden_grow_per_pass: 20,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let run = || {
             let mut eng = engine(p.clone());

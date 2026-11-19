@@ -86,6 +86,20 @@ pub struct Params {
     /// Readout consolidation segments: a uniform sample of the pass's byte arrivals (true) or
     /// the surprise-ranked W-replay segments (false). Same count as `replay_per_pass`.
     pub readout_uniform: bool,
+    /// Which tissue predicts the byte stream: context cells (`context.rs`) or the reservoir
+    /// readout of the input cells.
+    pub tissue: Tissue,
+    /// Context cells: deepest context in bytes (K).
+    pub ctx_depth: u32,
+    /// Context cells: evidence (count) the deepest cell needs before a miss grows a child.
+    pub ctx_grow_min: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tissue {
+    Context,
+    Reservoir,
 }
 
 impl Default for Params {
@@ -127,11 +141,22 @@ impl Default for Params {
             dream_seeds: 8,
             replay_readout: true,
             readout_uniform: true,
+            tissue: Tissue::Context,
+            ctx_depth: 8,
+            ctx_grow_min: 2.0,
         }
     }
 }
 
 impl Params {
+    /// Defaults with the reservoir readout as the byte-stream tissue (the Phase 1 path).
+    pub fn reservoir() -> Self {
+        Self {
+            tissue: Tissue::Reservoir,
+            ..Self::default()
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let positive = [
             ("t_heat", self.t_heat),

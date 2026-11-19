@@ -50,12 +50,22 @@ mod tests {
 
     #[test]
     fn save_resume_is_bit_identical() {
+        for tissue in [
+            crate::rules::Tissue::Context,
+            crate::rules::Tissue::Reservoir,
+        ] {
+            resume_matches(tissue);
+        }
+    }
+
+    fn resume_matches(tissue: crate::rules::Tissue) {
         let cfg = SeedConfig {
             hidden: 256,
             ..SeedConfig::default()
         };
         let p = crate::rules::Params {
             consolidate_every: 300, // exercise plasticity and wayback state across the cut
+            tissue,
             ..Default::default()
         };
         let corpus: Vec<u8> = b"the cat sat on the mat. the dog sat on the log. "
@@ -90,6 +100,7 @@ mod tests {
         ob.finish(&mut b).unwrap();
 
         assert!(a.plasticity.passes > 0);
+        assert!(a.ctx.cells() > 1 || tissue == crate::rules::Tissue::Reservoir);
         assert_eq!(state_hash(&a), state_hash(&b));
         assert_eq!(oa.metrics_hash(), ob.metrics_hash());
         assert_eq!(oa.reports, ob.reports);

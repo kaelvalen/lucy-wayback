@@ -63,6 +63,8 @@ pub struct Engine {
     decay: rules::Decay,
     /// Logical clock: time of the last processed event.
     pub now: u64,
+    /// Context cells: the byte-stream tissue when `p.tissue` is `Context`.
+    pub ctx: crate::context::Context,
 }
 
 impl Engine {
@@ -80,6 +82,7 @@ impl Engine {
             stats: Stats::default(),
             sched,
             now: 0,
+            ctx: Default::default(),
         }
     }
 
@@ -397,6 +400,10 @@ impl Engine {
             let rep = crate::plasticity::consolidate(self, t);
             self.stats.on_consolidation(&rep);
         }
+        if self.p.tissue == rules::Tissue::Context {
+            self.arrive_context(t, b);
+            return;
+        }
         let mut touched = self.senses.take_hot();
         let truth_hot = touched.contains(&(b as u32));
         self.stats.on_coverage(touched.len(), truth_hot);
@@ -493,6 +500,38 @@ impl Engine {
         );
         self.sched.push_arrive(t + self.senses.ticks_per_byte);
     }
+
+    /// Context-cell arrival: vote -> distribution over the 256-byte sheet -> learn on the chain
+    /// -> grow at the deepest miss. The byte's input cell still spikes into the reservoir.
+    fn arrive_context(&mut self, t: u64, b: usize) {
+        let mut probs = std::mem::take(&mut self.senses.probs);
+        let guess = self.ctx.arrive(b as u8, &self.p, &mut probs);
+        // Logits whose softmax is exactly `probs` (all > 0: EPS mass is uniform).
+        let mut scores = std::mem::take(&mut self.senses.scores);
+        for (s, &q) in scores.iter_mut().zip(&probs) {
+            *s = q.ln();
+        }
+        self.stats
+            .on_byte(guess as usize == b, &scores, probs[b], b);
+        self.senses.scores = scores;
+        self.senses.probs = probs;
+        for c in self.senses.take_hot() {
+            self.touch(c as usize, t);
+            self.g.cells.clear_input(c as usize);
+        }
+        let cells = &mut self.g.cells;
+        cells.h_prev[b] = cells.h[b];
+        cells.h[b] = self.senses.codes[b];
+        self.spike(
+            b,
+            t,
+            Wave {
+                origin: self.stats.bytes_total,
+                depth: 0,
+            },
+        );
+        self.sched.push_arrive(t + self.senses.ticks_per_byte);
+    }
 }
 
 #[cfg(test)]
@@ -511,7 +550,7 @@ mod tests {
 
     /// 256 inputs + one hidden cell H: A -> H (0.5), C -> H (0.5, silent), H -> B (1.0).
     fn tiny() -> (Engine, usize) {
-        tiny_with(Params::default())
+        tiny_with(Params::reservoir())
     }
 
     fn tiny_with(p: Params) -> (Engine, usize) {
@@ -636,7 +675,7 @@ mod tests {
         let p = Params {
             target_rate: 0.1,
             adapt_step: 0.0,
-            ..Params::default()
+            ..Params::reservoir()
         };
         let (mut eng, _) = tiny_with(p);
         let text = b"AB".repeat(500);
@@ -655,7 +694,7 @@ mod tests {
                 hidden: 64,
                 ..SeedConfig::default()
             },
-            Params::default(),
+            Params::reservoir(),
         );
         let c = 300;
         eng.g.cells.log_theta[c] = 50.0; // never fires
@@ -698,7 +737,7 @@ mod tests {
                 hidden: 64,
                 ..SeedConfig::default()
             },
-            Params::default(),
+            Params::reservoir(),
         );
         let c = 290;
         eng.g.cells.heat[c] = 3.0;
@@ -714,7 +753,7 @@ mod tests {
             hidden: 512,
             ..SeedConfig::default()
         };
-        let mut eng = seed::build(&cfg, Params::default());
+        let mut eng = seed::build(&cfg, Params::reservoir());
         let text = b"the cat sat on the mat. the dog sat on the log. ".repeat(20);
         let mut obs = Observatory::new(&eng, every, seed, None);
         eng.run(&mut text.iter().copied(), 6000, &mut obs).unwrap();
@@ -729,7 +768,7 @@ mod tests {
                 hidden: 3000,
                 ..SeedConfig::default()
             };
-            let mut eng = seed::build(&cfg, Params::default());
+            let mut eng = seed::build(&cfg, Params::reservoir());
             eng.parallel = parallel;
             let text = b"where's the doggie ? there's the doggie . ".repeat(30);
             let mut obs = Observatory::new(&eng, 1000, 0, None);
@@ -760,7 +799,7 @@ mod tests {
         let text = b"abracadabra ".repeat(30);
         let mut counts = Vec::new();
         for extra in [0, 2048] {
-            let mut eng = seed::build(&cfg, Params::default());
+            let mut eng = seed::build(&cfg, Params::reservoir());
             seed::add_dormant(&mut eng, &cfg, extra);
             let mut obs = Observatory::new(&eng, 1000, 0, None);
             eng.run(&mut text.iter().copied(), 3000, &mut obs).unwrap();

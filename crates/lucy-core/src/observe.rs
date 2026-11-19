@@ -369,6 +369,9 @@ pub struct Metrics {
     pub tick: u64,
     pub bytes_seen: u64,
     pub cells_total: usize,
+    /// Context cells (the byte-stream tissue) and how many have grown since the start.
+    pub context_cells: usize,
+    pub context_grown: u64,
     pub cells_fired_in_window: usize,
     pub fires_in_window: u64,
     pub fires_per_tick: Option<f64>,
@@ -608,6 +611,8 @@ impl Observatory {
             tick,
             bytes_seen: s.bytes_total,
             cells_total: eng.g.cells.slots.live(),
+            context_cells: eng.ctx.cells(),
+            context_grown: eng.ctx.grown,
             cells_fired_in_window: s.fired.len(),
             fires_in_window: s.fires,
             fires_per_tick: ratio(s.fires as f64, tick - self.last_tick),
@@ -771,6 +776,7 @@ pub fn state_hash(eng: &Engine) -> u64 {
         h.u64(e.last_t[i]);
     }
     h.f32s(&eng.senses.bias);
+    eng.ctx.hash(&mut h);
     let pl = &eng.plasticity;
     h.u64(pl.next_seq);
     h.u64(pl.passes);
